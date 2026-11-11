@@ -4,7 +4,7 @@
 // the caller flips the context to face right.
 import { drawArrowArt, PAL } from '../game/art';
 import { drawLayered } from './layers';
-import { HERO, CTX_REST, CTX_ACTIVE } from './heroDef';
+import { HERO, CTX } from './heroDef';
 
 export type Vec = { x: number; y: number };
 export const DEG = Math.PI / 180;
@@ -731,7 +731,8 @@ function drawAlongAxis(ctx: CanvasRenderingContext2D, parts: Part[], A: Vec, B: 
   ctx.restore();
 }
 
-function drawLeg(ctx: CanvasRenderingContext2D, hip: Vec, knee: Vec, ankle: Vec, footRot: number, shade: number) {
+/** Thigh, shin and knee wrap (the boot is its own layer). */
+function drawLegBones(ctx: CanvasRenderingContext2D, hip: Vec, knee: Vec, ankle: Vec, shade: number) {
   const a1 = angOf(knee.x - hip.x, knee.y - hip.y);
   const a2 = angOf(ankle.x - knee.x, ankle.y - knee.y);
   // thigh
@@ -746,14 +747,6 @@ function drawLeg(ctx: CanvasRenderingContext2D, hip: Vec, knee: Vec, ankle: Vec,
   ctx.rotate(a2);
   drawAlongAxis(ctx, LEG_SHIN, { x: 134, y: 160 }, { x: 153, y: 268 }, -12, G.shin + 8, 0.5, shade);
   ctx.restore();
-  // boot
-  ctx.save();
-  ctx.translate(ankle.x, ankle.y);
-  ctx.rotate(-footRot);
-  ctx.scale(0.52, 0.52);
-  ctx.translate(-152, -266);
-  fillParts(ctx, LEG_BOOT, shade);
-  ctx.restore();
   // knee wrap, centred on the joint, following the bend
   ctx.save();
   ctx.translate(knee.x, knee.y);
@@ -761,6 +754,16 @@ function drawLeg(ctx: CanvasRenderingContext2D, hip: Vec, knee: Vec, ankle: Vec,
   ctx.scale(0.5, 0.5);
   ctx.translate(-140, -141);
   fillParts(ctx, LEG_WRAP, shade);
+  ctx.restore();
+}
+
+function drawBoot(ctx: CanvasRenderingContext2D, ankle: Vec, footRot: number, shade: number) {
+  ctx.save();
+  ctx.translate(ankle.x, ankle.y);
+  ctx.rotate(-footRot);
+  ctx.scale(0.52, 0.52);
+  ctx.translate(-152, -266);
+  fillParts(ctx, LEG_BOOT, shade);
   ctx.restore();
 }
 
@@ -797,17 +800,6 @@ export function drawRig(ctx: CanvasRenderingContext2D, p: RigPose, s: Skeleton, 
   ctx.translate(p.x, p.y);
   if (p.squash !== 1) ctx.scale(1 + (1 - p.squash) * 0.6, p.squash);
   ctx.lineJoin = 'round';
-
-  const bowInFrontHand = p.bow.mode === 'hand' && p.bow.slungT < 0.5;
-  // The front arm sits BEHIND the torso, beard and strap unless it is doing something
-  // that has to read in front of the body: holding a prop/weapon/hat, or raised above the shoulder.
-  // Each situation has its own (user editable) layer order — see heroDef.ts.
-  const frontHolds =
-    p.hat.where === 'hand' ||
-    p.carriedItem.kind !== 'none' ||
-    (p.weapon.kind !== 'unarmed' && p.weapon.kind !== 'bow' && !p.weapon.backHand);
-  const frontRaised = s.handF.y < s.shoulderF.y + 24;
-  const frontUnder = bowInFrontHand || (!frontHolds && !frontRaised);
 
   const inHead = (fn: () => void) => {
     ctx.save();
@@ -852,8 +844,10 @@ export function drawRig(ctx: CanvasRenderingContext2D, p: RigPose, s: Skeleton, 
       drawQuiverArt(ctx, opts.arrowsInQuiver ?? 3);
       ctx.restore();
     },
-    legBack: () => drawLeg(ctx, s.hipB, s.kneeB, s.ankleB, p.backLeg.foot, 0.82),
-    legFront: () => drawLeg(ctx, s.hipF, s.kneeF, s.ankleF, p.frontLeg.foot, 1),
+    legBack: () => drawLegBones(ctx, s.hipB, s.kneeB, s.ankleB, 0.82),
+    bootBack: () => drawBoot(ctx, s.ankleB, p.backLeg.foot, 0.82),
+    legFront: () => drawLegBones(ctx, s.hipF, s.kneeF, s.ankleF, 1),
+    bootFront: () => drawBoot(ctx, s.ankleF, p.frontLeg.foot, 1),
 
     armFront: () => {
       drawArmSeg(ctx, s.shoulderF, s.elbowF);
@@ -986,10 +980,14 @@ export function drawRig(ctx: CanvasRenderingContext2D, p: RigPose, s: Skeleton, 
         ctx.fillStyle = COL.skinDark;
         rrect(ctx, N.x - N.w / 2, N.y - N.h / 2, N.w, N.h, 14);
         ctx.fill();
-        // mustache
+        ctx.restore(); // turn
+      }),
+
+    mustache: () =>
+      inHead(() => {
+        ctx.translate(p.head.turn * 20, 0); // follows the head turn like the face
         const M = G.mustache;
         const sm = p.face.smile;
-        ctx.save();
         ctx.translate(M.ax, M.ay - 5 * sm);
         ctx.scale(1 + 0.1 * sm, 1 - 0.16 * sm);
         ctx.strokeStyle = COL.white;
@@ -1001,8 +999,6 @@ export function drawRig(ctx: CanvasRenderingContext2D, p: RigPose, s: Skeleton, 
         ctx.moveTo(16, 0);
         ctx.lineTo(16 + M.dx, M.dy);
         ctx.stroke();
-        ctx.restore();
-        ctx.restore(); // turn
       }),
 
     hat: () => {
@@ -1040,7 +1036,7 @@ export function drawRig(ctx: CanvasRenderingContext2D, p: RigPose, s: Skeleton, 
     handBack: () => drawHand(ctx, s.handB),
   };
 
-  drawLayered(ctx, HERO, frontUnder ? CTX_REST : CTX_ACTIVE, parts);
+  drawLayered(ctx, HERO, CTX, parts);
 
   // ---- debug overlays
   const d = opts.debug;

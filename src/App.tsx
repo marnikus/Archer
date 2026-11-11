@@ -96,7 +96,7 @@ export default function App() {
         </button>
       )}
 
-      {hud.phase !== 'title' && <HUD s={hud} onPause={() => game.togglePause()} onMute={toggleMute} onMove={(d) => game.setTouchMove(d)} onAction={(a) => game.runAction(a)} onEquip={(k) => game.equip(k)} />}
+      {hud.phase !== 'title' && <HUD s={hud} onPause={() => game.togglePause()} onMute={toggleMute} onMove={(d) => game.setTouchMove(d)} onAction={(a) => game.runAction(a)} onEquip={(k) => game.equip(k)} onSettings={openSettings} />}
 
       {hud.phase === 'title' && <TitleScreen mode={mode} setMode={setMode} onPlay={play} onLab={openLab} onSettings={openSettings} best={hud.best} touch={hud.touch} />}
 

@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import { Animator, type AnimStatus, type BaseState, type Reaction } from '../rig/animator';
 import { DEG, type WeaponKind } from '../rig/rig';
+import '../rig/heroDef';
+import { LayerList } from '../settings/LayerList';
 
 export interface LabUI {
   timeScale: number;
@@ -362,6 +364,10 @@ export function LabPanel({ anim, status: s, ui, setUi, onExit, onStep }: Props) 
                 Cancel
               </Btn>
             </Group>
+          </Section>
+
+          <Section title="Layer order" hint="what draws in front of what · same list as Settings · hover a row to highlight it" defaultOpen={false}>
+            <LayerList charId="hero" ctxId="main" compact />
           </Section>
 
           <Section title="Manual sliders" hint="tune timing & follow-through" defaultOpen={false}>

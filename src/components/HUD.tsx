@@ -12,6 +12,7 @@ interface Props {
   onMove: (dir: number) => void;
   onAction: (action: string) => void;
   onEquip: (kind: WeaponKind) => void;
+  onSettings?: () => void;
 }
 
 const QuiverIcon = ({ className = '' }: { className?: string }) => (
@@ -31,7 +32,7 @@ const BowIcon = ({ className = '' }: { className?: string }) => (
   </svg>
 );
 
-export function HUD({ s, onPause, onMute, onMove, onAction, onEquip }: Props) {
+export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings }: Props) {
   const [animOpen, setAnimOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   useEffect(() => {
@@ -135,6 +136,11 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip }: Props) {
         <button className="hud-btn" onClick={() => setHelpOpen(true)} aria-label="Controls" title="Controls (F1)">
           ⌨
         </button>
+        {onSettings && (
+          <button className="hud-btn" onClick={onSettings} aria-label="Settings" title="Settings · character layer order">
+            ⚙
+          </button>
+        )}
       </div>
       {animOpen && <AnimPanel onAction={onAction} onClose={() => setAnimOpen(false)} />}
       {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
