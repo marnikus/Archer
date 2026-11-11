@@ -54,6 +54,9 @@ export function GameCanvas({ game, onSnapshot }: Props) {
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+        game.setKey('shift', true);
+      }
       if (e.repeat) return;
       const k = keyMap[e.code];
       if (k) {
@@ -63,6 +66,10 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       if (e.code === 'Space') {
         (document.activeElement as HTMLElement | null)?.blur?.();
         game.pressFire();
+      } else if (e.code === 'KeyH') {
+        game.toggleHatInGame();
+      } else if (e.code === 'KeyJ' || e.code === 'KeyV') {
+        game.triggerHop();
       } else if (e.code === 'Escape' || e.code === 'KeyP') {
         if (game.phase === 'playing' || game.phase === 'paused') game.togglePause();
       } else if (e.code === 'KeyM') {
@@ -71,6 +78,9 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') {
+        game.setKey('shift', false);
+      }
       const k = keyMap[e.code];
       if (k) game.setKey(k, false);
       else if (e.code === 'Space') game.releaseFire();
@@ -80,6 +90,7 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       game.setKey('right', false);
       game.setKey('up', false);
       game.setKey('down', false);
+      game.setKey('shift', false);
       game.releaseFire();
     };
     window.addEventListener('keydown', onKeyDown);

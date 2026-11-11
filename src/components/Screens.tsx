@@ -1,4 +1,5 @@
 import type { Best, Mode, Result } from '../game/engine';
+import { HAT_LABELS, type HatId } from '../game/rig';
 
 const fmtTime = (t: number) => {
   const m = Math.floor(t / 60);
@@ -38,7 +39,7 @@ export function Controls({ touch }: { touch: boolean }) {
         <Key>←</Key>
         <Key>→</Key>
       </span>
-      <span>Walk (or A / D)</span>
+      <span>Walk (hold Shift to Run)</span>
       <span className="flex gap-1">
         <Key>↑</Key>
         <Key>↓</Key>
@@ -48,6 +49,11 @@ export function Controls({ touch }: { touch: boolean }) {
         <Key>SPACE</Key>
       </span>
       <span>Hold to draw · release to shoot</span>
+      <span className="flex gap-1">
+        <Key>H</Key>
+        <Key>V</Key>
+      </span>
+      <span>Hat on/off · Hop</span>
       <span>
         <Key>ESC</Key>
       </span>
@@ -59,12 +65,17 @@ export function Controls({ touch }: { touch: boolean }) {
 interface TitleProps {
   mode: Mode;
   setMode: (m: Mode) => void;
+  hat: HatId;
+  setHat: (h: HatId) => void;
   onPlay: () => void;
+  onOpenLab: () => void;
   best: Best | null;
   touch: boolean;
 }
 
-export function TitleScreen({ mode, setMode, onPlay, best, touch }: TitleProps) {
+const HATS: HatId[] = ['wool', 'archer', 'fur', 'none'];
+
+export function TitleScreen({ mode, setMode, hat, setHat, onPlay, onOpenLab, best, touch }: TitleProps) {
   return (
     <div className="absolute inset-0 flex items-center justify-center md:justify-start md:pl-[6vw]">
       <Card>
@@ -78,7 +89,7 @@ export function TitleScreen({ mode, setMode, onPlay, best, touch }: TitleProps) 
           Walk left, find your bow and arrows, then land <span className="font-black text-[#EA6227]">10 hits in a row</span>. A miss resets the streak — but nobody&apos;s keeping score of that.
         </p>
 
-        <div className="mt-5 grid grid-cols-2 gap-2">
+        <div className="mt-4 grid grid-cols-2 gap-2">
           {(
             [
               ['normal', 'Normal', 'Unlimited arrows · aim dots'],
@@ -88,7 +99,7 @@ export function TitleScreen({ mode, setMode, onPlay, best, touch }: TitleProps) 
             <button
               key={m}
               onClick={() => setMode(m)}
-              className={`rounded-2xl border-2 px-3 py-2.5 text-left transition-all ${
+              className={`rounded-2xl border-2 px-3 py-2 text-left transition-all ${
                 mode === m ? 'border-[#EA6227] bg-[#FFF3EA] shadow-[0_6px_18px_rgba(234,98,39,0.2)]' : 'border-[#E6E9F5] bg-white/60 hover:border-[#CADBF5]'
               }`}
             >
@@ -98,15 +109,46 @@ export function TitleScreen({ mode, setMode, onPlay, best, touch }: TitleProps) 
           ))}
         </div>
 
-        <button onClick={onPlay} className="play-btn mt-4 w-full rounded-2xl bg-[#EA6227] py-3.5 text-xl font-black text-white shadow-[0_10px_24px_rgba(234,98,39,0.35)] transition-transform hover:scale-[1.02] active:scale-[0.98]">
-          ▶ Play
-        </button>
+        {/* Hat selector */}
+        <div className="mt-3 flex items-center justify-between gap-2 rounded-2xl bg-[#EBEDF8]/80 px-3 py-2">
+          <span className="text-[11px] font-extrabold uppercase tracking-wider text-[#72625D]">Hat</span>
+          <div className="flex flex-wrap gap-1">
+            {HATS.map((h) => (
+              <button
+                key={h}
+                onClick={() => setHat(h)}
+                className={`rounded-xl px-2.5 py-1 text-xs font-extrabold transition-all ${
+                  hat === h ? 'bg-[#EA6227] text-white shadow-xs' : 'bg-white/80 text-[#4C372A] hover:bg-white'
+                }`}
+              >
+                {HAT_LABELS[h]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-4 flex gap-2">
+          <button
+            onClick={onPlay}
+            className="play-btn flex-1 rounded-2xl bg-[#EA6227] py-3.5 text-xl font-black text-white shadow-[0_10px_24px_rgba(234,98,39,0.35)] transition-transform hover:scale-[1.02] active:scale-[0.98]"
+          >
+            ▶ Play
+          </button>
+          <button
+            onClick={onOpenLab}
+            className="rounded-2xl border-2 border-[#CADBF5] bg-white/85 px-4 py-3 text-sm font-black text-[#4C372A] shadow-xs transition-transform hover:scale-[1.02] hover:bg-white active:scale-[0.98]"
+            title="Open Animation Lab (Section 13)"
+          >
+            Animation Lab
+          </button>
+        </div>
+
         {best && (
           <div className="mt-2 text-center text-xs font-bold text-[#72625D]">
             Best ({mode}): {best.score.toLocaleString()} pts · {best.arrows} arrows · {fmtTime(best.time)}
           </div>
         )}
-        <div className="mt-5 border-t border-[#E6E9F5] pt-4">
+        <div className="mt-4 border-t border-[#E6E9F5] pt-3">
           <Controls touch={touch} />
         </div>
       </Card>

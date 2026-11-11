@@ -1,11 +1,8 @@
-import { CFG } from './config';
+import { ANIM_CFG, CFG } from './config';
 import {
   PAL,
-  RIG,
   DEG,
   art,
-  archerGeom,
-  drawArcher,
   drawArrowArt,
   drawBowItem,
   drawQuiverItem,
@@ -26,13 +23,14 @@ import {
   TARGET_K,
   TARGET_CENTER_UP,
   TARGET_RY_ART,
-  type ArcherVis,
 } from './art';
 import { AudioSys } from './audio';
+import { RigAnimator, type AnimatorInput } from './animator';
+import { RIG_NEW, bowWeaponGeom, drawRigArcher, type HatId } from './rig';
 
 export type Mode = 'normal' | 'hard';
 export type Phase = 'title' | 'playing' | 'paused' | 'victory' | 'gameover';
-type Pose = 'idle' | 'walk' | 'aim' | 'draw' | 'release' | 'celebrate' | 'sad' | 'shake' | 'victory';
+type Pose = 'idle' | 'walk' | 'run' | 'aim' | 'draw' | 'release' | 'celebrate' | 'sad' | 'shake' | 'victory';
 
 const W = CFG.world.width;
 const G = CFG.world.groundY;
@@ -70,6 +68,8 @@ export interface HudState {
   arrowsLeft: number;
   hasBow: boolean;
   hasQuiver: boolean;
+  hat: HatId;
+  hatWearing: boolean;
   armed: boolean;
   charging: boolean;
   power: number;
@@ -135,6 +135,11 @@ interface FloatText {
   size: number;
 }
 
+interface Footprint {
+  x: number;
+  life: number;
+}
+
 interface Pickup {
   kind: 'bow' | 'quiver';
   x: number;
@@ -151,15 +156,6 @@ interface Archer {
   facing: -1 | 1;
   pose: Pose;
   poseT: number;
-  walkPhase: number;
-  stepFlag: number;
-  blinkT: number;
-  blinkNext: number;
-  armFront: number;
-  armBack: number;
-  bowRot: number;
-  drawVis: number;
-  across: number;
   hasBow: boolean;
   hasQuiver: boolean;
   angle: number;
@@ -169,6 +165,7 @@ interface Archer {
   victory: boolean;
   firedOnce: boolean;
   hintUnarmedT: number;
+  idleNoInputT: number;
 }
 
 interface TargetState {
@@ -206,6 +203,8 @@ export class Game {
   phase: Phase = 'title';
   mode: Mode = 'normal';
   audio: AudioSys;
+  anim = new RigAnimator();
+  selectedHat: HatId = 'wool';
   time = 0;
   elapsed = 0;
   timeScale = 1;
@@ -222,15 +221,17 @@ export class Game {
   wind = { cur: 0, goal: 0, max: 0, gust: false, gustT: 0 };
   arrows: Arrow[] = [];
   particles: Particle[] = [];
+  footprints: Footprint[] = [];
   floats: FloatText[] = [];
   cam = { x: 0, y: 400, zoom: 1, impactT: 0, impactZoom: 0.9 };
   snow: Array<{ x: number; y: number; r: number; v: number; ph: number; a: number }> = [];
   clouds: Array<{ x: number; y: number; r: number; v: number; a: number }> = [];
   decor: Decor[] = [];
-  keys = { left: false, right: false, up: false, down: false };
+  keys = { left: false, right: false, up: false, down: false, shift: false };
   keyHold = { up: 0, down: 0 };
   spaceDown = false;
   touchMove = 0;
+  touchRun = false;
   touchAim = { active: false, sx: 0, sy: 0 };
   isTouch = false;
   banner: Banner | null = null;
@@ -249,10 +250,17 @@ export class Game {
   vp = { w: 1000, h: 800, dpr: 1, base: 1, s: 1 };
   onPhase: ((p: Phase) => void) | null = null;
   startArrowVisible = true;
+  private lastArcherHand = { x: CFG.archer.startX - 100, y: G - 260 };
 
   constructor(audio: AudioSys) {
     this.audio = audio;
     this.isTouch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches;
+    try {
+      const savedHat = localStorage.getItem('als-hat') as HatId | null;
+      if (savedHat && ['none', 'wool', 'archer', 'fur'].includes(savedHat)) this.selectedHat = savedHat;
+    } catch {
+      /* ignore */
+    }
     this.buildDecor();
     for (let i = 0; i < 70; i++) {
       this.snow.push({
@@ -278,6 +286,28 @@ export class Game {
     this.cam.x = CFG.archer.startX + 60;
     this.cam.y = 400;
     this.cam.zoom = 1;
+  }
+
+  setHatChoice(h: HatId) {
+    this.selectedHat = h;
+    try {
+      localStorage.setItem('als-hat', h);
+    } catch {
+      /* ignore */
+    }
+    this.anim.setHatStyle(h, this.phase === 'title');
+  }
+
+  toggleHatInGame() {
+    if (this.phase !== 'playing') return;
+    if (this.anim.hat === 'none') this.anim.hat = 'wool';
+    this.anim.triggerHat(!this.anim.hatWearing);
+  }
+
+  triggerHop() {
+    if (this.phase !== 'playing' || this.archer.victory || this.archer.charging) return;
+    this.archer.idleNoInputT = 0;
+    this.anim.triggerJump(false);
   }
 
   // ------------------------------------------------------------------ setup
@@ -328,21 +358,16 @@ export class Game {
   }
 
   resetWorld() {
+    this.anim.reset();
+    this.anim.hat = this.selectedHat;
+    this.anim.hatWearing = this.selectedHat !== 'none';
+    this.anim.weapon = 'none';
     this.archer = {
       x: CFG.archer.startX,
       y: G,
       facing: -1,
       pose: 'idle',
       poseT: 0,
-      walkPhase: 0,
-      stepFlag: 0,
-      blinkT: 0,
-      blinkNext: 2 + Math.random() * 3,
-      armFront: RIG.ARM_REST_FRONT,
-      armBack: RIG.ARM_REST_BACK,
-      bowRot: 0,
-      drawVis: 0,
-      across: 0,
       hasBow: false,
       hasQuiver: false,
       angle: 40,
@@ -352,6 +377,7 @@ export class Game {
       victory: false,
       firedOnce: false,
       hintUnarmedT: 0,
+      idleNoInputT: 0,
     };
     this.pickups = [
       { kind: 'bow', x: CFG.bow.x, collected: false, fly: 0, fx: 0, fy: 0, phase: 0 },
@@ -376,6 +402,7 @@ export class Game {
     this.wind = { cur: 0, goal: 0, max: 0, gust: false, gustT: 0 };
     this.arrows = [];
     this.particles = [];
+    this.footprints = [];
     this.floats = [];
     this.score = 0;
     this.streak = 0;
@@ -395,8 +422,9 @@ export class Game {
     this.result = null;
     this.startArrowVisible = true;
     this.cam.impactT = 0;
-    this.keys = { left: false, right: false, up: false, down: false };
+    this.keys = { left: false, right: false, up: false, down: false, shift: false };
     this.touchMove = 0;
+    this.touchRun = false;
     this.touchAim.active = false;
     this.audio.setLayers(0);
     this.audio.duck(false);
@@ -444,6 +472,7 @@ export class Game {
   // ------------------------------------------------------------------ input
   setKey(k: keyof Game['keys'], down: boolean) {
     this.keys[k] = down;
+    if (down) this.archer.idleNoInputT = 0;
     if (down && (k === 'up' || k === 'down')) {
       this.keyHold[k] = 0;
       if (this.phase === 'playing' && this.armed()) {
@@ -462,6 +491,7 @@ export class Game {
 
   pressFire() {
     this.spaceDown = true;
+    this.archer.idleNoInputT = 0;
     if (this.phase !== 'playing') return;
     const a = this.archer;
     if (a.victory || a.charging) return;
@@ -469,10 +499,11 @@ export class Game {
       a.pose = 'shake';
       a.poseT = 0;
       a.hintUnarmedT = 1.6;
+      this.anim.triggerUnarmedFail(a.hasBow, a.hasQuiver);
       this.audio.shake();
       return;
     }
-    if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight()) return;
+    if (a.pose === 'walk' || a.pose === 'run' || !this.canShootMore() || this.arrowInFlight()) return;
     this.beginCharge();
   }
 
@@ -488,6 +519,8 @@ export class Game {
     a.pose = 'draw';
     a.poseT = 0;
     a.facing = -1;
+    this.anim.desiredFacing = -1;
+    if (this.anim.shootPhase === 'none') this.anim.beginShoot(false);
     this.audio.creakStart();
   }
 
@@ -497,6 +530,7 @@ export class Game {
     a.power = 0;
     this.touchAim.active = false;
     if (a.pose === 'draw') a.pose = 'aim';
+    this.anim.cancelShoot();
     this.audio.creakStop();
   }
 
@@ -509,6 +543,7 @@ export class Game {
 
   touchAimStart(px: number, py: number) {
     this.isTouch = true;
+    this.archer.idleNoInputT = 0;
     if (this.phase !== 'playing') return;
     const a = this.archer;
     if (a.victory || a.charging) return;
@@ -517,7 +552,7 @@ export class Game {
       this.spaceDown = false;
       return;
     }
-    if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight()) return;
+    if (a.pose === 'walk' || a.pose === 'run' || !this.canShootMore() || this.arrowInFlight()) return;
     this.touchAim = { active: true, sx: px, sy: py };
     this.beginCharge();
   }
@@ -544,6 +579,7 @@ export class Game {
 
   setTouchMove(dir: number) {
     this.touchMove = dir;
+    if (dir !== 0) this.archer.idleNoInputT = 0;
   }
 
   // ------------------------------------------------------------------ helpers
@@ -612,66 +648,54 @@ export class Game {
     return TARGET_RY_ART * TARGET_K * this.target.scale;
   }
 
-  private archerVis(): ArcherVis {
+  private animatorInput(): AnimatorInput {
     const a = this.archer;
-    const t = this.time;
-    const walking = a.pose === 'walk';
-    const bob = walking ? Math.abs(Math.sin(a.walkPhase)) * 7 : Math.sin(t * 2.2) * 2 + 2;
-    let jump = 0;
-    let squash = 1;
-    let headShake = 0;
-    let headTilt = 0;
-    let eyeScale = 1;
-    let smile = 0;
-    let spinX = 1;
-    const legSwing = walking ? Math.sin(a.walkPhase) * 0.45 : 0;
-    if (a.pose === 'celebrate') {
-      const p = Math.min(1, a.poseT / 0.7);
-      jump = Math.sin(p * Math.PI) * 70;
-      smile = 1;
+    let move = (this.keys.right ? 1 : 0) - (this.keys.left ? 1 : 0) + this.touchMove;
+    move = clamp(move, -1, 1);
+    if (a.victory || this.phase !== 'playing' || a.charging) move = 0;
+
+    // Notice nearby uncollected pickups from 150 units away!
+    let noticeDir = 0;
+    if (this.phase === 'playing' && !a.victory) {
+      for (const pk of this.pickups) {
+        if (!pk.collected && Math.abs(pk.x - a.x) < 150) {
+          noticeDir = pk.x < a.x ? -1 : 1;
+          break;
+        }
+      }
     }
-    if (a.pose === 'victory') {
-      jump = Math.abs(Math.sin(t * 5)) * 50;
-      spinX = Math.cos(t * 4);
-      if (Math.abs(spinX) < 0.15) spinX = 0.15 * (spinX < 0 ? -1 : 1);
-      smile = 1;
-    }
-    if (a.pose === 'sad') {
-      squash = 0.95;
-      headTilt = -0.1;
-      eyeScale = 0.5;
-    }
-    if (a.pose === 'shake') headShake = Math.sin(a.poseT * 28) * 9 * (1 - a.poseT / 0.6);
-    if (a.blinkT > 0) eyeScale = Math.min(eyeScale, 0.12);
-    const standing = !walking && a.pose !== 'celebrate' && a.pose !== 'victory' && a.pose !== 'sad' && a.pose !== 'shake';
+
+    const flying = this.arrows.find((ar) => ar.state === 'fly');
+
     return {
-      bob,
-      jump,
-      squash,
-      headShake,
-      headTilt,
-      eyeScale,
-      legSwing,
-      armFront: a.armFront,
-      armBack: a.armBack,
-      bowRot: a.bowRot,
-      draw: a.drawVis,
-      across: a.across,
-      showArrow: this.armed() && standing && this.canShootMore() && a.pose !== 'release' && !this.arrowInFlight(),
-      hasBow: a.hasBow,
+      moveDir: move,
+      runHeld: this.keys.shift || this.touchRun,
+      aimAngleDeg: a.angle,
+      power01: a.power / 100,
+      drawing: a.charging,
       hasQuiver: a.hasQuiver,
-      smile,
-      spinX,
+      noticeDir,
+      trackFlyingY: flying ? flying.y - (a.y - 250) : null,
+      bowCarryStyle: 'slung',
     };
   }
 
-  /** Launch point: arrow tip when the string is at rest, for the exact aim angle (independent of draw). */
+  /** Exact launch point matching the visible arrow tip along the aim angle (for facing = -1). */
   private launchPoint() {
-    const vis = this.archerVis();
-    const th = this.archer.angle * DEG;
-    const g = archerGeom({ armFront: th, bowRot: th, draw: 0 });
     const a = this.archer;
-    return { x: a.x + (g.tip.x - RIG.FEET.x), y: a.y + (g.tip.y - RIG.FEET.y) - vis.bob - vis.jump };
+    const th = a.angle * DEG;
+    const lean = 8 * DEG * clamp(a.angle / 80, 0, 1);
+    const handX = RIG_NEW.LEAD_SHOULDER.x - RIG_NEW.LEAD_ARM_LEN * Math.cos(th);
+    const handY = RIG_NEW.LEAD_SHOULDER.y - RIG_NEW.LEAD_ARM_LEN * Math.sin(th);
+    const g = bowWeaponGeom(handX, handY, th, 0, this.anim.weapon);
+    // Apply body lean around (480, 590) and drop of 4 units
+    const dx = g.tip.x - 480;
+    const dy = g.tip.y - 590;
+    const c = Math.cos(lean);
+    const s = Math.sin(lean);
+    const lx = 480 + dx * c - dy * s;
+    const ly = 590 + dx * s + dy * c + 4;
+    return { x: a.x + (lx - RIG_NEW.FEET.x), y: a.y + (ly - RIG_NEW.FEET.y) };
   }
 
   /** Power (0-100) needed to hit the target centre at the current angle, ignoring wind. -1 if unreachable. */
@@ -719,6 +743,7 @@ export class Game {
     a.poseT = 0;
     a.firedOnce = true;
     this.touchAim.active = false;
+    this.anim.releaseShoot(a.angle, power01);
     this.audio.creakStop();
     this.audio.twang(power01);
     this.audio.whoosh();
@@ -733,6 +758,7 @@ export class Game {
     p.fly = 0;
     p.fx = p.x;
     p.fy = G - 90;
+    this.anim.triggerPickup(p.kind, p.x < this.archer.x ? -1 : 1);
     this.audio.pickup();
     this.burst(p.x, G - 90, 14, ['#FFFFFF', '#FFF4D6', '#CADBF5'], 260, 's', 200);
     this.ring(p.x, G - 90, '#FFFFFF', 60);
@@ -742,6 +768,7 @@ export class Game {
     const a = this.archer;
     if (p.kind === 'bow') {
       a.hasBow = true;
+      this.anim.setWeapon('shortbow', true);
       this.bowKey++;
       this.addFloat(a.x, a.y - 540, 'Bow acquired!', PAL.orange, 32);
     } else {
@@ -752,8 +779,9 @@ export class Game {
     this.audio.pop();
     this.ring(a.x, a.y - 250, '#FFFFFF', 90);
     if (this.armed()) {
-      this.showBanner('ARMED!', 'good', this.isTouch ? 'Drag back on the right side to shoot' : 'Hold SPACE to draw · ↑↓ to aim');
+      this.showBanner('ARMED!', 'good', this.isTouch ? 'Drag back on the right side to shoot' : 'Hold SPACE to draw · ↑↓ to aim · Shift Run');
       this.audio.armed();
+      this.anim.triggerArmedMoment();
       if (a.pose === 'idle') a.pose = 'aim';
       this.burst(a.x, a.y - 250, 24, [PAL.red, PAL.orange2, '#FFFFFF', PAL.gold], 380, 's', 500);
     }
@@ -830,6 +858,7 @@ export class Game {
       this.win();
       return;
     }
+    this.anim.triggerReaction('hit');
     if (this.streak === 3 || this.streak === 5 || this.streak === 7) {
       this.showBanner(`STREAK ×${this.streak}!`, 'great', this.streak === 3 ? 'Keep it up' : this.streak === 5 ? 'Halfway there' : 'Almost!');
       this.audio.streak();
@@ -861,6 +890,7 @@ export class Game {
     if (arrow.final) this.audio.duck(false);
     a.pose = 'sad';
     a.poseT = 0;
+    this.anim.triggerReaction('miss');
     if (this.mode === 'hard' && this.arrowsLeft <= 0) this.gameoverT = 0;
   }
 
@@ -870,6 +900,7 @@ export class Game {
     a.pose = 'victory';
     this.victoryT = 0;
     this.slowT = 0;
+    this.anim.triggerReaction('win');
     this.showBanner('YOU DID IT!', 'great', '10 in a row');
     this.audio.duck(false);
     this.audio.setLayers(3);
@@ -908,7 +939,7 @@ export class Game {
       if (c.x > 3400) c.x = -2400;
     }
     if (this.phase === 'title') {
-      this.updateArcherIdle(dt);
+      this.updateArcherTitle(dt);
       this.updateCamera(dtr);
       return;
     }
@@ -951,25 +982,29 @@ export class Game {
     }
   }
 
-  private updateArcherIdle(dt: number) {
-    const a = this.archer;
-    a.blinkNext -= dt;
-    if (a.blinkNext <= 0) {
-      a.blinkT = 0.12;
-      a.blinkNext = 2 + Math.random() * 3.5;
+  private updateArcherTitle(dt: number) {
+    // On title screen: calm stand breathing + fidgets (and gentle auto-sit after 12s)
+    if (this.time > 12 && this.anim.baseState !== 'sit') {
+      this.anim.toggleSit();
     }
-    if (a.blinkT > 0) a.blinkT -= dt;
-    a.armFront = lerpRate(a.armFront, RIG.ARM_REST_FRONT, 10, dt);
-    a.armBack = lerpRate(a.armBack, RIG.ARM_REST_BACK, 10, dt);
+    this.anim.update(dt, {
+      moveDir: 0,
+      runHeld: false,
+      aimAngleDeg: 40,
+      power01: 0,
+      drawing: false,
+      hasQuiver: false,
+      bowCarryStyle: 'slung',
+    });
   }
 
   private updateArcher(dt: number) {
     const a = this.archer;
-    this.updateArcherIdle(dt);
     if (a.hintUnarmedT > 0) a.hintUnarmedT -= dt;
     const armed = this.armed();
     let move = (this.keys.right ? 1 : 0) - (this.keys.left ? 1 : 0) + this.touchMove;
     move = clamp(move, -1, 1);
+    const runHeld = this.keys.shift || this.touchRun;
     if (a.victory || this.phase !== 'playing') move = 0;
     if (a.charging && move !== 0) this.cancelCharge();
 
@@ -981,35 +1016,67 @@ export class Game {
     if (a.pose === 'sad' && a.poseT > 0.9) a.pose = base;
     if (a.pose === 'shake' && a.poseT > 0.6) a.pose = base;
 
+    let dx = 0;
     if (move !== 0) {
-      a.x = clamp(a.x + move * CFG.archer.walkSpeed * dt, CFG.archer.minX, CFG.archer.maxX);
+      a.idleNoInputT = 0;
+      const spd = runHeld ? ANIM_CFG.runSpeed : CFG.archer.walkSpeed;
+      const prevX = a.x;
+      a.x = clamp(a.x + move * spd * dt, CFG.archer.minX, CFG.archer.maxX);
+      dx = a.x - prevX;
       a.facing = move < 0 ? -1 : 1;
-      a.walkPhase += dt * 9;
-      if (a.pose !== 'walk') {
-        a.pose = 'walk';
-        a.walkPhase = 0;
-      }
+      a.pose = runHeld ? 'run' : 'walk';
       this.startArrowVisible = false;
-      const flag = Math.floor(a.walkPhase / Math.PI);
-      if (flag !== a.stepFlag) {
-        a.stepFlag = flag;
-        this.audio.footstep(flag % 2 === 0);
+    } else {
+      if (a.pose === 'walk' || a.pose === 'run') {
+        a.pose = base;
+        a.poseT = 0;
+        if (armed) a.facing = -1;
       }
-    } else if (a.pose === 'walk') {
-      a.pose = base;
-      a.poseT = 0;
-      if (armed) a.facing = -1;
+      if (!a.charging && !a.victory && !this.arrowInFlight() && !this.keys.up && !this.keys.down) {
+        a.idleNoInputT += dt;
+        if (a.idleNoInputT >= ANIM_CFG.autoSitWait && this.anim.baseState !== 'sit') {
+          this.anim.shootPhase = 'none';
+          this.anim.toggleSit();
+        }
+      } else {
+        a.idleNoInputT = 0;
+      }
     }
-    if (armed && a.pose === 'aim') a.facing = -1;
+
+    if (armed && a.pose === 'aim' && this.anim.baseState !== 'sit') {
+      a.facing = -1;
+      this.anim.desiredFacing = -1;
+      if (this.anim.facing !== -1 && this.anim.turnT <= 0) this.anim.requestTurn(-1);
+    }
 
     // aim input (continuous after a short hold)
     if (armed && !a.victory) {
       for (const k of ['up', 'down'] as const) {
         if (this.keys[k]) {
+          a.idleNoInputT = 0;
+          if (this.anim.baseState === 'sit') this.anim.toggleSit();
           this.keyHold[k] += dt;
           if (this.keyHold[k] > 0.28) a.angle = clamp(a.angle + (k === 'up' ? 1 : -1) * 45 * dt, CFG.shot.angleMin, CFG.shot.angleMax);
         }
       }
+    }
+
+    // Keep RigAnimator synchronized in shooting stance when armed & standing ready!
+    const readyToAim =
+      armed &&
+      move === 0 &&
+      !a.victory &&
+      this.anim.baseState !== 'sit' &&
+      this.anim.jumpPhase === 'none' &&
+      !this.anim.reaction &&
+      this.canShootMore() &&
+      !this.arrowInFlight() &&
+      this.anim.armedMomentT <= 0;
+
+    if (readyToAim && this.anim.shootPhase === 'none' && (a.pose === 'aim' || a.pose === 'draw')) {
+      this.anim.beginShoot(false);
+    } else if ((!readyToAim || move !== 0) && this.anim.shootPhase !== 'none' && this.anim.shootPhase !== 'release' && this.anim.shootPhase !== 'follow' && this.anim.shootPhase !== 'recover') {
+      this.anim.shootPhase = 'none';
     }
 
     // meter
@@ -1026,17 +1093,35 @@ export class Game {
     }
     if (a.charging) this.audio.creakLevel(a.power / 100);
 
-    // visual smoothing
-    const walking = a.pose === 'walk';
-    const standingArmed = armed && (a.pose === 'aim' || a.pose === 'draw' || a.pose === 'release');
-    const frontGoal = standingArmed ? a.angle * DEG : RIG.ARM_REST_FRONT + (walking ? Math.sin(a.walkPhase) * 0.45 : 0);
-    const backGoal = a.charging ? RIG.ARM_REST_BACK + 0.3 : RIG.ARM_REST_BACK + (walking ? -Math.sin(a.walkPhase) * 0.45 : 0);
-    const bowGoal = standingArmed ? a.angle * DEG : 0;
-    a.armFront = lerpRate(a.armFront, frontGoal, 12, dt);
-    a.armBack = lerpRate(a.armBack, backGoal, 12, dt);
-    a.bowRot = lerpRate(a.bowRot, bowGoal, 12, dt);
-    a.drawVis = lerpRate(a.drawVis, a.charging ? 0.4 + 0.6 * (a.power / 100) : 0, a.charging ? 16 : 30, dt);
-    a.across = lerpRate(a.across, a.charging ? 1 : 0, a.charging ? 10 : 20, dt);
+    // Update 4-layer RigAnimator
+    const inp = this.animatorInput();
+    this.anim.update(dt, inp, dx);
+
+    // Consume anim events (footsteps, snow puffs, footprints, breath clouds)
+    for (const ev of this.anim.events) {
+      if (ev.type === 'footstep') {
+        this.audio.footstep(ev.alt);
+      } else if (ev.type === 'snowPuff') {
+        this.burst(a.x + (Math.random() - 0.5) * 30, G - 4, ev.count, ['#FFFFFF', '#EBEDF8'], 120, 'c', 450);
+      } else if (ev.type === 'footprint') {
+        this.footprints.push({ x: a.x, life: 0 });
+      } else if (ev.type === 'breathCloud') {
+        this.particles.push({
+          x: a.x + a.facing * 42,
+          y: G - 235,
+          vx: a.facing * 32,
+          vy: -20,
+          life: 0,
+          max: 0.9,
+          color: 'rgba(255,255,255,0.75)',
+          size: 16,
+          shape: 'c',
+          rot: 0,
+          vr: 0,
+          g: -8,
+        });
+      }
+    }
   }
 
   private updatePickups(dt: number) {
@@ -1190,6 +1275,10 @@ export class Game {
       p.y += p.vy * dt;
       p.rot += p.vr * dt;
     }
+    for (let i = this.footprints.length - 1; i >= 0; i--) {
+      this.footprints[i].life += dt;
+      if (this.footprints[i].life > 3.5) this.footprints.splice(i, 1);
+    }
     for (let i = this.floats.length - 1; i >= 0; i--) {
       const f = this.floats[i];
       f.life += dt;
@@ -1208,7 +1297,7 @@ export class Game {
       else if (!a.hasQuiver) want = `Find the arrows ${dirTo(CFG.quiver.x)}`;
       else if (!a.hasBow) want = `Find the bow ${dirTo(CFG.bow.x)}`;
       else if (!a.firedOnce && this.pickups.every((p) => p.fly >= 1))
-        want = this.isTouch ? 'Drag back on the right side to aim & shoot' : 'Hold SPACE to draw · ↑↓ to aim';
+        want = this.isTouch ? 'Drag back on the right side to aim & shoot' : 'Hold SPACE to draw · ↑↓ to aim · Shift Run';
     }
     if (want !== this.hintLast) {
       this.hintLast = want;
@@ -1229,7 +1318,7 @@ export class Game {
     let ty: number;
     let tz: number;
     const flying = this.arrows.find((ar) => ar.state === 'fly');
-    const walking = a.pose === 'walk';
+    const walking = a.pose === 'walk' || a.pose === 'run';
     const groundFrac = 0.3;
     if (this.phase === 'title') {
       tx = CFG.archer.startX + 60;
@@ -1367,7 +1456,6 @@ export class Game {
       ctx.fillRect(-3000, wallTop, 3140, G + 4 - wallTop);
       ctx.fillStyle = '#E8EFFA';
       ctx.fillRect(104, wallTop, 36, G + 4 - wallTop);
-      // rock strata + snow ledges for texture
       for (let k = 0; k < 14; k++) {
         const ly = G - 120 - k * 240 - hash(k + 40) * 140;
         if (ly < top - 100 || ly > bottom + 100) continue;
@@ -1379,7 +1467,6 @@ export class Game {
         roundRectPath(ctx, 140 - lw, ly, lw + 6, 18, 9);
         ctx.fill();
       }
-      // snow drift at the foot of the wall
       drawMound(ctx, 140, G + 2, 260, 46, '#F6F7FC');
       drawMound(ctx, 60, G + 2, 300, 70, '#F6F7FC');
     }
@@ -1408,12 +1495,22 @@ export class Game {
       ctx.restore();
     }
 
+    // snow footprints
+    for (const fp of this.footprints) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, 1 - fp.life / 3.5) * 0.55;
+      ctx.fillStyle = PAL.groundDark;
+      ctx.beginPath();
+      ctx.ellipse(fp.x, G + 5, 20, 6, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
     // target
     {
       const T = this.target;
       const by = this.baseY();
       const lift = CFG.target.standLift;
-      // permanent snow base under the target
       ctx.fillStyle = '#E4E7F3';
       ctx.beginPath();
       ctx.ellipse(T.x, G + 30, 250, 34, 0, 0, Math.PI * 2);
@@ -1459,7 +1556,8 @@ export class Game {
         const bob = Math.sin(t * 2.5 + p.phase) * 8;
         const cx = p.x;
         const cy = G - 95 + bob;
-        const pulse = 0.5 + 0.5 * Math.sin(t * 3 + p.phase);
+        const near = Math.abs(this.archer.x - p.x) < 150;
+        const pulse = 0.5 + 0.5 * Math.sin(t * (near ? 8 : 3) + p.phase);
         const rg = ctx.createRadialGradient(cx, cy, 10, cx, cy, 140);
         rg.addColorStop(0, 'rgba(255,255,255,0.75)');
         rg.addColorStop(1, 'rgba(255,255,255,0)');
@@ -1474,7 +1572,7 @@ export class Game {
         ctx.stroke();
         ctx.fillStyle = '#FFFFFF';
         for (let k = 0; k < 3; k++) {
-          const ang = t * 1.2 + k * 2.094 + p.phase;
+          const ang = t * (near ? 2.6 : 1.2) + k * 2.094 + p.phase;
           drawStar(ctx, cx + Math.cos(ang) * 115, cy + Math.sin(ang) * 115 * 0.6, 9 + 4 * Math.sin(t * 5 + k), ang);
         }
         ctx.save();
@@ -1528,21 +1626,42 @@ export class Game {
       ctx.fill();
     }
 
-    // archer
+    // archer (upgraded 4-layer rig!)
     {
       const a = this.archer;
-      const vis = this.archerVis();
+      const pose = this.anim.evaluatePose(this.animatorInput());
+
+      // ground shadow shrinking with height
+      if (this.phase !== 'title') {
+        const shadowA = Math.max(0.15, 0.65 - pose.jumpY / 240);
+        ctx.fillStyle = `rgba(180,188,210,${shadowA})`;
+        ctx.beginPath();
+        ctx.ellipse(a.x, a.y + 6, Math.max(40, 110 - pose.jumpY * 0.35), 14, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
       ctx.save();
       ctx.translate(a.x, a.y);
-      ctx.scale(a.facing === -1 ? 1 : -1, 1);
-      drawArcher(ctx, vis);
+      ctx.scale(this.anim.facing === -1 ? 1 : -1, 1);
+      const localPivots = drawRigArcher(ctx, pose);
       ctx.restore();
 
+      const f = this.anim.facing === -1 ? 1 : -1;
+      this.lastArcherHand = { x: a.x + localPivots.leadHand.x * f, y: a.y + localPivots.leadHand.y };
+
       // angle indicator + preview
-      if (this.phase === 'playing' && this.armed() && (a.pose === 'aim' || a.pose === 'draw') && !a.victory && a.facing === -1 && !this.arrowInFlight()) {
-        const g = archerGeom(vis);
-        const hx = a.x + (g.hand.x - RIG.FEET.x);
-        const hy = a.y + (g.hand.y - RIG.FEET.y) - vis.bob - vis.jump;
+      if (
+        this.phase === 'playing' &&
+        this.armed() &&
+        (a.pose === 'aim' || a.pose === 'draw') &&
+        this.anim.baseState !== 'sit' &&
+        this.anim.shootPhase !== 'none' &&
+        !a.victory &&
+        this.anim.facing === -1 &&
+        !this.arrowInFlight()
+      ) {
+        const hx = this.lastArcherHand.x;
+        const hy = this.lastArcherHand.y;
         const th = a.angle * DEG;
         ctx.save();
         ctx.strokeStyle = 'rgba(114,98,93,0.45)';
@@ -1658,9 +1777,8 @@ export class Game {
       const al = k < 0.25 ? k / 0.25 : k > 6.3 ? Math.max(0, 1 - (k - 6.3) / 0.7) : 1;
       if (al > 0) {
         const a = this.archer;
-        const vis = this.archerVis();
         const bx = a.x;
-        const by = a.y - 440 - vis.jump + Math.sin(t * 3) * 4;
+        const by = a.y - 440 - this.anim.jumpY + Math.sin(t * 3) * 4;
         ctx.save();
         ctx.globalAlpha = al;
         ctx.font = '700 26px Nunito, "Segoe UI", system-ui, sans-serif';
@@ -1716,6 +1834,8 @@ export class Game {
       arrowsLeft: this.mode === 'hard' ? this.arrowsLeft : -1,
       hasBow: a.hasBow,
       hasQuiver: a.hasQuiver,
+      hat: this.anim.hat,
+      hatWearing: this.anim.hatWearing,
       armed: this.armed(),
       charging: a.charging,
       power: a.power,
