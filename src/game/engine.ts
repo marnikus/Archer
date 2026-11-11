@@ -662,6 +662,9 @@ export class Game {
       hasQuiver: a.hasQuiver,
       smile,
       spinX,
+      bodyTilt: walking ? Math.sin(a.walkPhase) * 0.035 : 0,
+      hipShift: walking ? Math.sin(a.walkPhase) * 4 : 0,
+      beardLag: walking ? Math.sin(a.walkPhase - 0.6) * 0.025 : 0,
     };
   }
 
@@ -1029,8 +1032,8 @@ export class Game {
     // visual smoothing
     const walking = a.pose === 'walk';
     const standingArmed = armed && (a.pose === 'aim' || a.pose === 'draw' || a.pose === 'release');
-    const frontGoal = standingArmed ? a.angle * DEG : RIG.ARM_REST_FRONT + (walking ? Math.sin(a.walkPhase) * 0.45 : 0);
-    const backGoal = a.charging ? RIG.ARM_REST_BACK + 0.3 : RIG.ARM_REST_BACK + (walking ? -Math.sin(a.walkPhase) * 0.45 : 0);
+    const frontGoal = standingArmed ? a.angle * DEG : RIG.ARM_REST_FRONT + (walking ? Math.sin(a.walkPhase) * (a.hasBow ? 0.12 : 0.38) : 0);
+    const backGoal = a.charging ? RIG.ARM_REST_BACK + 0.3 : RIG.ARM_REST_BACK + (walking ? -Math.sin(a.walkPhase + 0.2) * (a.hasQuiver ? 0.22 : 0.48) : 0);
     const bowGoal = standingArmed ? a.angle * DEG : 0;
     a.armFront = lerpRate(a.armFront, frontGoal, 12, dt);
     a.armBack = lerpRate(a.armBack, backGoal, 12, dt);

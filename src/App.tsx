@@ -3,6 +3,7 @@ import { Game, type HudState, type Mode } from './game/engine';
 import { AudioSys } from './game/audio';
 import { GameCanvas } from './components/GameCanvas';
 import { HUD } from './components/HUD';
+import { TestLab } from './components/TestLab';
 import { GameOverScreen, PauseScreen, TitleScreen, VictoryScreen } from './components/Screens';
 
 export default function App() {
@@ -11,6 +12,7 @@ export default function App() {
   const game = gameRef.current;
 
   const [hud, setHud] = useState<HudState>(() => game.snapshot());
+  const [lab, setLab] = useState(false);
   const [mode, setMode] = useState<Mode>('normal');
   const [, setTick] = useState(0);
 
@@ -31,14 +33,14 @@ export default function App() {
   // Enter starts / replays from the overlay screens
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code !== 'Enter') return;
+      if (lab || e.code !== 'Enter') return;
       if (game.phase === 'title') play();
       else if (game.phase === 'victory' || game.phase === 'gameover') game.restart();
       else if (game.phase === 'paused') game.togglePause();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [game, play]);
+  }, [game, play, lab]);
 
   // keep the title's best score in sync with the selected mode
   useEffect(() => {
@@ -61,7 +63,8 @@ export default function App() {
 
       {hud.phase !== 'title' && <HUD s={hud} onPause={() => game.togglePause()} onMute={toggleMute} onMove={(d) => game.setTouchMove(d)} />}
 
-      {hud.phase === 'title' && <TitleScreen mode={mode} setMode={setMode} onPlay={play} best={hud.best} touch={hud.touch} />}
+      {hud.phase === 'title' && <><TitleScreen mode={mode} setMode={setMode} onPlay={play} best={hud.best} touch={hud.touch} /><button onClick={() => setLab(true)} className="absolute bottom-5 right-5 rounded-xl bg-[#4C372A] px-5 py-3 text-sm font-bold text-white shadow-lg hover:bg-[#EA6227]">Animation Test Lab →</button></>}
+      {lab && <TestLab onClose={() => setLab(false)} />}
 
       {hud.phase === 'paused' && (
         <PauseScreen

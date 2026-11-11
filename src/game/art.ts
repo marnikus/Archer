@@ -228,6 +228,9 @@ export interface ArcherVis {
   hasQuiver: boolean;
   smile: number;
   spinX: number;
+  bodyTilt?: number;
+  hipShift?: number;
+  beardLag?: number;
 }
 
 export function rot(x: number, y: number, a: number) {
@@ -419,8 +422,11 @@ export function drawArcher(ctx: CanvasRenderingContext2D, v: ArcherVis) {
     ctx.restore();
   }
 
-  // body group (bobs)
-  ctx.translate(0, -v.bob);
+  // Independent hip shift and upper-body counter-rotation.
+  ctx.translate(v.hipShift ?? 0, -v.bob);
+  ctx.translate(480, 582);
+  ctx.rotate(v.bodyTilt ?? 0);
+  ctx.translate(-480, -582);
 
   if (v.hasQuiver) {
     ctx.save();
@@ -459,8 +465,13 @@ export function drawArcher(ctx: CanvasRenderingContext2D, v: ArcherVis) {
   ctx.translate(480 + v.headShake, 403);
   ctx.rotate(v.headTilt);
   ctx.translate(-480, -403);
+  ctx.save();
+  ctx.translate(480, 403);
+  ctx.rotate(v.beardLag ?? 0);
+  ctx.translate(-480, -403);
   ctx.fillStyle = '#E6E1DC';
   ctx.fill(A.beard);
+  ctx.restore();
   ctx.fillStyle = PAL.skin;
   ctx.fill(A.face);
   ctx.fillStyle = '#272220';
