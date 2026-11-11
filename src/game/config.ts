@@ -1,7 +1,7 @@
 // Tuning config – tweak freely. Units are "world units" (1 unit = 1 SVG px of the source art).
 export const CFG = {
   world: { width: 4000, groundY: 651 },
-  archer: { walkSpeed: 250, startX: 3600, minX: 1200, maxX: 3880 },
+  archer: { walkSpeed: 250, runSpeed: 410, startX: 3600, minX: 1200, maxX: 3880 },
   bow: { x: 1700 },
   quiver: { x: 2800 },
   target: { x: 300, baseRadius: 100, standLift: 100 },

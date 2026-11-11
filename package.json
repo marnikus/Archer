@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "mkdir -p tests/.cache && esbuild tests/rig.test.ts --bundle --platform=node --format=esm --outfile=tests/.cache/rig-tests.mjs && node --test tests/.cache/rig-tests.mjs"
   },
   "dependencies": {
     "clsx": "2.1.1",
@@ -20,6 +21,7 @@
     "@types/react": "19.2.7",
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "5.1.1",
+    "esbuild": "^0.27.7",
     "tailwindcss": "4.1.17",
     "typescript": "5.9.3",
     "vite": "7.3.2",

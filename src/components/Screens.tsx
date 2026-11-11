@@ -23,7 +23,7 @@ export function Controls({ touch }: { touch: boolean }) {
     return (
       <ul className="space-y-1.5 text-sm font-semibold text-[#72625D]">
         <li>
-          <span className="text-[#4C372A]">◀ ▶</span> buttons — walk
+          <span className="text-[#4C372A]">◀ ▶</span> buttons — walk · hold RUN to run
         </li>
         <li>
           <span className="text-[#4C372A]">Drag back</span> on the right side — aim &amp; power, release to shoot
@@ -38,7 +38,7 @@ export function Controls({ touch }: { touch: boolean }) {
         <Key>←</Key>
         <Key>→</Key>
       </span>
-      <span>Walk (or A / D)</span>
+      <span>Walk (or A / D) · hold Shift to run</span>
       <span className="flex gap-1">
         <Key>↑</Key>
         <Key>↓</Key>
@@ -62,9 +62,10 @@ interface TitleProps {
   onPlay: () => void;
   best: Best | null;
   touch: boolean;
+  onRig: () => void;
 }
 
-export function TitleScreen({ mode, setMode, onPlay, best, touch }: TitleProps) {
+export function TitleScreen({ mode, setMode, onPlay, best, touch, onRig }: TitleProps) {
   return (
     <div className="absolute inset-0 flex items-center justify-center md:justify-start md:pl-[6vw]">
       <Card>
@@ -101,6 +102,7 @@ export function TitleScreen({ mode, setMode, onPlay, best, touch }: TitleProps) 
         <button onClick={onPlay} className="play-btn mt-4 w-full rounded-2xl bg-[#EA6227] py-3.5 text-xl font-black text-white shadow-[0_10px_24px_rgba(234,98,39,0.35)] transition-transform hover:scale-[1.02] active:scale-[0.98]">
           ▶ Play
         </button>
+        <button onClick={onRig} className="btn-soft mt-2 w-full">⚙ Animation &amp; rig inspector</button>
         {best && (
           <div className="mt-2 text-center text-xs font-bold text-[#72625D]">
             Best ({mode}): {best.score.toLocaleString()} pts · {best.arrows} arrows · {fmtTime(best.time)}

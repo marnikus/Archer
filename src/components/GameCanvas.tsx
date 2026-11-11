@@ -53,6 +53,8 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       KeyS: 'down',
     };
     const onKeyDown = (e: KeyboardEvent) => {
+      if (document.querySelector('[data-rig-dialog]')) return;
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { game.running = true; return; }
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
       if (e.repeat) return;
       const k = keyMap[e.code];
@@ -71,6 +73,7 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'ShiftLeft' || e.code === 'ShiftRight') { game.running = false; return; }
       const k = keyMap[e.code];
       if (k) game.setKey(k, false);
       else if (e.code === 'Space') game.releaseFire();
@@ -81,6 +84,7 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       game.setKey('up', false);
       game.setKey('down', false);
       game.releaseFire();
+      game.running = false;
     };
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('keyup', onKeyUp);

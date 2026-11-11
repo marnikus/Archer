@@ -5,6 +5,8 @@ interface Props {
   onPause: () => void;
   onMute: () => void;
   onMove: (dir: number) => void;
+  onRun: (running: boolean) => void;
+  onRig: () => void;
 }
 
 const QuiverIcon = ({ className = '' }: { className?: string }) => (
@@ -24,7 +26,7 @@ const BowIcon = ({ className = '' }: { className?: string }) => (
   </svg>
 );
 
-export function HUD({ s, onPause, onMute, onMove }: Props) {
+export function HUD({ s, onPause, onMute, onMove, onRun, onRig }: Props) {
   const pct = (x: number) => `${(x / s.worldW) * 100}%`;
   const windStr = Math.abs(s.wind);
   const windArrows = Math.min(4, Math.max(1, Math.ceil(windStr / 30)));
@@ -104,6 +106,7 @@ export function HUD({ s, onPause, onMute, onMove }: Props) {
 
       {/* top-right: buttons */}
       <div className="pointer-events-auto absolute right-3 top-3 flex gap-2 sm:right-5 sm:top-5">
+        <button className="hud-btn" onClick={onRig} aria-label="Open rig inspector" title="Rig inspector">⚙</button>
         <button className="hud-btn" onClick={onMute} aria-label="Toggle sound" title="Sound (M)">
           {s.muted ? '🔇' : '🔊'}
         </button>
@@ -213,6 +216,7 @@ export function HUD({ s, onPause, onMute, onMove }: Props) {
               {label}
             </button>
           ))}
+          <button className="touch-btn text-xs" aria-label="Hold to run" onPointerDown={(e) => { e.currentTarget.setPointerCapture(e.pointerId); onRun(true); }} onPointerUp={() => onRun(false)} onPointerCancel={() => onRun(false)} onLostPointerCapture={() => onRun(false)}>RUN</button>
         </div>
       )}
       {s.touch && s.armed && !s.charging && (

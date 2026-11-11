@@ -32,7 +32,7 @@ import { AudioSys } from './audio';
 
 export type Mode = 'normal' | 'hard';
 export type Phase = 'title' | 'playing' | 'paused' | 'victory' | 'gameover';
-type Pose = 'idle' | 'walk' | 'aim' | 'draw' | 'release' | 'celebrate' | 'sad' | 'shake' | 'victory';
+type Pose = 'idle' | 'walk' | 'run' | 'aim' | 'draw' | 'release' | 'celebrate' | 'sad' | 'shake' | 'victory';
 
 const W = CFG.world.width;
 const G = CFG.world.groundY;
@@ -231,6 +231,8 @@ export class Game {
   keyHold = { up: 0, down: 0 };
   spaceDown = false;
   touchMove = 0;
+  running = false;
+  hat = true;
   touchAim = { active: false, sx: 0, sy: 0 };
   isTouch = false;
   banner: Banner | null = null;
@@ -397,6 +399,7 @@ export class Game {
     this.cam.impactT = 0;
     this.keys = { left: false, right: false, up: false, down: false };
     this.touchMove = 0;
+    this.running = false;
     this.touchAim.active = false;
     this.audio.setLayers(0);
     this.audio.duck(false);
@@ -472,7 +475,7 @@ export class Game {
       this.audio.shake();
       return;
     }
-    if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight()) return;
+    if ((a.pose === 'walk' || a.pose === 'run') || !this.canShootMore() || this.arrowInFlight()) return;
     this.beginCharge();
   }
 
@@ -517,7 +520,7 @@ export class Game {
       this.spaceDown = false;
       return;
     }
-    if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight()) return;
+    if ((a.pose === 'walk' || a.pose === 'run') || !this.canShootMore() || this.arrowInFlight()) return;
     this.touchAim = { active: true, sx: px, sy: py };
     this.beginCharge();
   }
@@ -615,8 +618,8 @@ export class Game {
   private archerVis(): ArcherVis {
     const a = this.archer;
     const t = this.time;
-    const walking = a.pose === 'walk';
-    const bob = walking ? Math.abs(Math.sin(a.walkPhase)) * 7 : Math.sin(t * 2.2) * 2 + 2;
+    const walking = a.pose === 'walk' || a.pose === 'run';
+    const bob = walking ? Math.abs(Math.sin(a.walkPhase)) * (a.pose === 'run' ? 12 : 6) : Math.sin(t * 2.2) * 2 + 2;
     let jump = 0;
     let squash = 1;
     let headShake = 0;
@@ -624,7 +627,6 @@ export class Game {
     let eyeScale = 1;
     let smile = 0;
     let spinX = 1;
-    const legSwing = walking ? Math.sin(a.walkPhase) * 0.45 : 0;
     if (a.pose === 'celebrate') {
       const p = Math.min(1, a.poseT / 0.7);
       jump = Math.sin(p * Math.PI) * 70;
@@ -651,13 +653,15 @@ export class Game {
       headShake,
       headTilt,
       eyeScale,
-      legSwing,
+      gait: a.pose === 'run' ? 'run' : walking ? 'walk' : 'idle',
+      gaitPhase: a.walkPhase,
+      hat: this.hat,
       armFront: a.armFront,
       armBack: a.armBack,
       bowRot: a.bowRot,
       draw: a.drawVis,
       across: a.across,
-      showArrow: this.armed() && standing && this.canShootMore() && a.pose !== 'release' && !this.arrowInFlight(),
+      showArrow: this.armed() && standing && a.charging && this.canShootMore() && !this.arrowInFlight(),
       hasBow: a.hasBow,
       hasQuiver: a.hasQuiver,
       smile,
@@ -965,7 +969,9 @@ export class Game {
 
   private updateArcher(dt: number) {
     const a = this.archer;
-    this.updateArcherIdle(dt);
+    a.blinkNext -= dt;
+    if (a.blinkNext <= 0) { a.blinkT = 0.12; a.blinkNext = 2 + Math.random() * 3.5; }
+    if (a.blinkT > 0) a.blinkT -= dt;
     if (a.hintUnarmedT > 0) a.hintUnarmedT -= dt;
     const armed = this.armed();
     let move = (this.keys.right ? 1 : 0) - (this.keys.left ? 1 : 0) + this.touchMove;
@@ -982,20 +988,17 @@ export class Game {
     if (a.pose === 'shake' && a.poseT > 0.6) a.pose = base;
 
     if (move !== 0) {
-      a.x = clamp(a.x + move * CFG.archer.walkSpeed * dt, CFG.archer.minX, CFG.archer.maxX);
+      const gait = this.running ? 'run' : 'walk';
+      const previousX = a.x;
+      a.x = clamp(a.x + move * (this.running ? CFG.archer.runSpeed : CFG.archer.walkSpeed) * dt, CFG.archer.minX, CFG.archer.maxX);
       a.facing = move < 0 ? -1 : 1;
-      a.walkPhase += dt * 9;
-      if (a.pose !== 'walk') {
-        a.pose = 'walk';
-        a.walkPhase = 0;
-      }
+      if (a.pose !== 'walk' && a.pose !== 'run') { a.walkPhase = 0; a.stepFlag = 0; }
+      a.pose = gait;
+      if (a.x !== previousX) a.walkPhase += dt * (this.running ? 14 : 9);
       this.startArrowVisible = false;
       const flag = Math.floor(a.walkPhase / Math.PI);
-      if (flag !== a.stepFlag) {
-        a.stepFlag = flag;
-        this.audio.footstep(flag % 2 === 0);
-      }
-    } else if (a.pose === 'walk') {
+      if (flag !== a.stepFlag) { a.stepFlag = flag; this.audio.footstep(flag % 2 === 0); }
+    } else if (a.pose === 'walk' || a.pose === 'run') {
       a.pose = base;
       a.poseT = 0;
       if (armed) a.facing = -1;
@@ -1027,11 +1030,12 @@ export class Game {
     if (a.charging) this.audio.creakLevel(a.power / 100);
 
     // visual smoothing
-    const walking = a.pose === 'walk';
-    const standingArmed = armed && (a.pose === 'aim' || a.pose === 'draw' || a.pose === 'release');
-    const frontGoal = standingArmed ? a.angle * DEG : RIG.ARM_REST_FRONT + (walking ? Math.sin(a.walkPhase) * 0.45 : 0);
+    const walking = a.pose === 'walk' || a.pose === 'run';
+    const standingArmed = armed && (a.pose === 'draw' || a.pose === 'release');
+    // Carry the bow across the torso until the player draws.
+    const frontGoal = standingArmed ? a.angle * DEG : a.hasBow ? -2.15 : RIG.ARM_REST_FRONT + (walking ? Math.sin(a.walkPhase) * 0.4 : 0);
     const backGoal = a.charging ? RIG.ARM_REST_BACK + 0.3 : RIG.ARM_REST_BACK + (walking ? -Math.sin(a.walkPhase) * 0.45 : 0);
-    const bowGoal = standingArmed ? a.angle * DEG : 0;
+    const bowGoal = standingArmed ? a.angle * DEG : a.hasBow ? -0.85 : 0;
     a.armFront = lerpRate(a.armFront, frontGoal, 12, dt);
     a.armBack = lerpRate(a.armBack, backGoal, 12, dt);
     a.bowRot = lerpRate(a.bowRot, bowGoal, 12, dt);
@@ -1229,7 +1233,7 @@ export class Game {
     let ty: number;
     let tz: number;
     const flying = this.arrows.find((ar) => ar.state === 'fly');
-    const walking = a.pose === 'walk';
+    const walking = a.pose === 'walk' || a.pose === 'run';
     const groundFrac = 0.3;
     if (this.phase === 'title') {
       tx = CFG.archer.startX + 60;
@@ -1539,7 +1543,7 @@ export class Game {
       ctx.restore();
 
       // angle indicator + preview
-      if (this.phase === 'playing' && this.armed() && (a.pose === 'aim' || a.pose === 'draw') && !a.victory && a.facing === -1 && !this.arrowInFlight()) {
+      if (this.phase === 'playing' && this.armed() && a.pose === 'draw' && !a.victory && a.facing === -1 && !this.arrowInFlight()) {
         const g = archerGeom(vis);
         const hx = a.x + (g.hand.x - RIG.FEET.x);
         const hy = a.y + (g.hand.y - RIG.FEET.y) - vis.bob - vis.jump;

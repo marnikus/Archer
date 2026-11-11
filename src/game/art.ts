@@ -1,6 +1,7 @@
 // All vector art for the game. Paths are lifted 1:1 from the source SVG so the
 // in-game look matches the original flat style exactly.
 import { CFG } from './config';
+import { legRig, type Gait } from './rig';
 
 export const DEG = Math.PI / 180;
 
@@ -217,7 +218,10 @@ export interface ArcherVis {
   headShake: number;
   headTilt: number;
   eyeScale: number;
-  legSwing: number;
+  gait: Gait;
+  gaitPhase: number;
+  hat: boolean;
+  debug?: boolean;
   armFront: number;
   armBack: number;
   bowRot: number;
@@ -287,16 +291,16 @@ export function drawArrowArt(ctx: CanvasRenderingContext2D, L = RIG.ARROW_LEN) {
   ctx.fillStyle = PAL.red2;
   ctx.beginPath();
   ctx.moveTo(-L + 6, -3);
-  ctx.lineTo(-L + 14, -17);
-  ctx.lineTo(-L + 46, -17);
+  ctx.lineTo(-L - 4, -17);
+  ctx.lineTo(-L + 24, -17);
   ctx.lineTo(-L + 34, -3);
   ctx.closePath();
   ctx.fill();
   ctx.fillStyle = PAL.orange2;
   ctx.beginPath();
   ctx.moveTo(-L + 6, 3);
-  ctx.lineTo(-L + 14, 17);
-  ctx.lineTo(-L + 46, 17);
+  ctx.lineTo(-L - 4, 17);
+  ctx.lineTo(-L + 24, 17);
   ctx.lineTo(-L + 34, 3);
   ctx.closePath();
   ctx.fill();
@@ -404,19 +408,23 @@ export function drawArcher(ctx: CanvasRenderingContext2D, v: ArcherVis) {
   ctx.scale(v.spinX, v.squash);
   ctx.translate(-RIG.FEET.x, -RIG.FEET.y);
 
-  // legs
-  for (const [path, hx] of [
-    [A.legL, 420],
-    [A.legR, 538],
-  ] as Array<[Path2D, number]>) {
-    const sw = hx === 420 ? v.legSwing : -v.legSwing;
-    ctx.save();
-    ctx.translate(hx, 582);
-    ctx.rotate(sw);
-    ctx.translate(-hx, -582);
-    ctx.fillStyle = PAL.brownDark;
-    ctx.fill(path);
-    ctx.restore();
+  // Articulated legs share their joint positions with the inspection overlay.
+  const legs = legRig(v.gaitPhase, v.gait, v.bob);
+  for (const [i, leg] of legs.entries()) {
+    ctx.strokeStyle = i === 0 ? '#3e3028' : PAL.brownDark;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 57;
+    ctx.beginPath();
+    ctx.moveTo(leg.hip.x, leg.hip.y);
+    ctx.lineTo(leg.knee.x, leg.knee.y);
+    ctx.lineTo(leg.ankle.x, leg.ankle.y);
+    ctx.stroke();
+    ctx.lineWidth = 35;
+    ctx.beginPath();
+    ctx.moveTo(leg.ankle.x, leg.ankle.y);
+    ctx.lineTo(leg.toe.x, leg.toe.y);
+    ctx.stroke();
   }
 
   // body group (bobs)
@@ -458,7 +466,7 @@ export function drawArcher(ctx: CanvasRenderingContext2D, v: ArcherVis) {
   ctx.save();
   ctx.translate(480 + v.headShake, 403);
   ctx.rotate(v.headTilt);
-  ctx.translate(-480, -403);
+  ctx.translate(-480 - 38, -403);
   ctx.fillStyle = '#E6E1DC';
   ctx.fill(A.beard);
   ctx.fillStyle = PAL.skin;
@@ -486,6 +494,12 @@ export function drawArcher(ctx: CanvasRenderingContext2D, v: ArcherVis) {
   ctx.lineCap = 'round';
   ctx.stroke(A.mustache);
   ctx.restore();
+  if (v.hat) {
+    ctx.fillStyle = '#92532f';
+    ctx.fill(rr(403, 239, 210, 77, 32));
+    ctx.fillStyle = '#c79b6c';
+    ctx.fill(rr(384, 289, 246, 54, 20));
+  }
   ctx.restore();
 
   drawArm(ctx, A.armL, RIG.FRONT_PIVOT.x, RIG.FRONT_PIVOT.y, v.armFront);
@@ -495,6 +509,26 @@ export function drawArcher(ctx: CanvasRenderingContext2D, v: ArcherVis) {
     ctx.translate(g.hand.x, g.hand.y);
     ctx.rotate(v.bowRot);
     drawBowHeld(ctx, v.draw, v.showArrow);
+    ctx.restore();
+  }
+  if (v.debug) {
+    // Body is already translated by -bob; compensate for leg joints in world pose.
+    ctx.save();
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = '#25b5c4';
+    ctx.fillStyle = '#ffffff';
+    const line = (points: Array<{ x: number; y: number }>) => {
+      ctx.beginPath();
+      points.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+      ctx.stroke();
+      for (const p of points) { ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+    };
+    for (const leg of legs) line([leg.hip, leg.knee, leg.ankle, leg.toe].map(p => ({ x: p.x, y: p.y + v.bob })));
+    line([{ x: 480, y: 300 }, { x: 480, y: 429 }, { x: 480, y: 582 }]);
+    line([RIG.FRONT_PIVOT, g.hand]);
+    const back = rot(104, 0, v.armBack);
+    line([RIG.BACK_PIVOT, { x: RIG.BACK_PIVOT.x + back.x, y: RIG.BACK_PIVOT.y + back.y }]);
+    if (v.hasBow) { ctx.strokeStyle = '#e74d31'; line([g.hand, g.nock, g.tip]); }
     ctx.restore();
   }
   ctx.restore();
