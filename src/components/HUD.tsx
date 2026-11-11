@@ -1,10 +1,17 @@
+import { useEffect, useState } from 'react';
 import type { HudState } from '../game/engine';
+import type { WeaponKind } from '../rig/rig';
+import { WEAPON_SLOTS } from '../game/hotkeys';
+import { AnimPanel, HelpPanel } from './HudPanels';
+import { WeaponIcon } from './WeaponIcon';
 
 interface Props {
   s: HudState;
   onPause: () => void;
   onMute: () => void;
   onMove: (dir: number) => void;
+  onAction: (action: string) => void;
+  onEquip: (kind: WeaponKind) => void;
 }
 
 const QuiverIcon = ({ className = '' }: { className?: string }) => (
@@ -24,7 +31,19 @@ const BowIcon = ({ className = '' }: { className?: string }) => (
   </svg>
 );
 
-export function HUD({ s, onPause, onMute, onMove }: Props) {
+export function HUD({ s, onPause, onMute, onMove, onAction, onEquip }: Props) {
+  const [animOpen, setAnimOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.code === 'F1') {
+        e.preventDefault();
+        setHelpOpen((o) => !o);
+      } else if (e.code === 'Escape') setHelpOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const pct = (x: number) => `${(x / s.worldW) * 100}%`;
   const windStr = Math.abs(s.wind);
   const windArrows = Math.min(4, Math.max(1, Math.ceil(windStr / 30)));
@@ -110,17 +129,67 @@ export function HUD({ s, onPause, onMute, onMove }: Props) {
         <button className="hud-btn" onClick={onPause} aria-label="Pause" title="Pause (Esc)">
           ⏸
         </button>
+        <button className="hud-btn" onClick={() => setAnimOpen((o) => !o)} aria-label="Animations" title="Play animations">
+          🎬
+        </button>
+        <button className="hud-btn" onClick={() => setHelpOpen(true)} aria-label="Controls" title="Controls (F1)">
+          ⌨
+        </button>
       </div>
+      {animOpen && <AnimPanel onAction={onAction} onClose={() => setAnimOpen(false)} />}
+      {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
+
+      {/* stance readout (sneak / sit / walk style …) */}
+      {s.stance && (
+        <div className="pointer-events-none absolute left-1/2 top-14 -translate-x-1/2 rounded-full bg-white/75 px-3 py-0.5 text-[11px] font-extrabold tracking-wide text-[#72625D] backdrop-blur-sm">
+          {s.stance}
+        </div>
+      )}
 
       {/* bottom-left: inventory */}
-      <div className="absolute bottom-3 left-3 flex gap-2 sm:bottom-5 sm:left-5">
-        <div key={`b${s.bowKey}`} className={`inv-slot ${s.hasBow ? 'inv-on pip-pop' : ''}`} title="Bow">
-          <BowIcon className="h-9 w-7" />
-          {s.hasBow && <span className="inv-check">✓</span>}
+      <div className="absolute bottom-3 left-3 flex flex-col gap-2 sm:bottom-5 sm:left-5">
+        <div className="flex items-end gap-2">
+          <div key={`b${s.bowKey}`} className={`inv-slot ${s.hasBow ? 'inv-on pip-pop' : ''}`} title="Bow">
+            <BowIcon className="h-9 w-7" />
+            {s.hasBow && <span className="inv-check">✓</span>}
+          </div>
+          <div key={`q${s.quiverKey}`} className={`inv-slot ${s.hasQuiver ? 'inv-on pip-pop' : ''}`} title="Quiver">
+            <QuiverIcon className="h-9 w-7" />
+            {s.hasQuiver && <span className="inv-check">✓</span>}
+          </div>
         </div>
-        <div key={`q${s.quiverKey}`} className={`inv-slot ${s.hasQuiver ? 'inv-on pip-pop' : ''}`} title="Quiver">
-          <QuiverIcon className="h-9 w-7" />
-          {s.hasQuiver && <span className="inv-check">✓</span>}
+        <div className="pointer-events-auto flex items-center gap-1.5">
+          {WEAPON_SLOTS.map((w) => {
+            const locked = w.kind === 'bow' && !s.hasBow;
+            return (
+              <button
+                key={w.kind}
+                type="button"
+                title={`${w.label} (${w.key})${locked ? ' — find the bow first' : ''}`}
+                onClick={(e) => {
+                  e.currentTarget.blur();
+                  onEquip(w.kind);
+                }}
+                className={`wslot ${s.weapon === w.kind ? 'wslot-on' : ''} ${locked ? 'wslot-locked' : ''}`}
+              >
+                <WeaponIcon kind={w.kind} size={34} />
+                {!s.touch && <span className="wslot-key">{w.key}</span>}
+                {s.weapon === w.kind && w.kind !== 'bow' && w.kind !== 'unarmed' && s.weaponReady && <span className="wslot-ready">ready</span>}
+              </button>
+            );
+          })}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.currentTarget.blur();
+              onAction('attack');
+            }}
+            className="wslot ml-1 w-14 !bg-[#EA6227] text-sm font-black text-white"
+            title="Attack (F)"
+          >
+            ⚔
+            {!s.touch && <span className="wslot-key !bg-white/80">F</span>}
+          </button>
         </div>
       </div>
 

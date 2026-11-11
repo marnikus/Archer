@@ -162,3 +162,87 @@ body {
 .title-text {
   text-shadow: 0 6px 0 rgba(255, 255, 255, 0.9);
 }
+
+/* Animation lab sliders */
+.lab-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: #e6e9f5;
+  outline: none;
+  margin-top: 4px;
+}
+.lab-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ea6227;
+  border: 2px solid #fff;
+  box-shadow: 0 2px 6px rgba(234, 98, 39, 0.4);
+  cursor: pointer;
+}
+.lab-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ea6227;
+  border: 2px solid #fff;
+  box-shadow: 0 2px 6px rgba(234, 98, 39, 0.4);
+  cursor: pointer;
+}
+
+/* Weapon inventory slots */
+.wslot {
+  position: relative;
+  display: flex;
+  height: 46px;
+  width: 46px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 6px 20px rgba(76, 55, 42, 0.12);
+  backdrop-filter: blur(4px);
+  transition: transform 0.15s, box-shadow 0.2s, opacity 0.2s;
+}
+.wslot:hover {
+  transform: translateY(-2px);
+}
+.wslot-on {
+  box-shadow:
+    0 6px 20px rgba(234, 98, 39, 0.3),
+    inset 0 0 0 2.5px #ea6227;
+  background: #fff;
+}
+.wslot-locked {
+  opacity: 0.4;
+  filter: grayscale(1);
+}
+.wslot-key {
+  position: absolute;
+  left: 3px;
+  top: 2px;
+  border-radius: 5px;
+  background: rgba(235, 237, 248, 0.95);
+  padding: 0 4px;
+  font-size: 9px;
+  font-weight: 900;
+  color: #72625d;
+  line-height: 14px;
+}
+.wslot-ready {
+  position: absolute;
+  bottom: -7px;
+  border-radius: 6px;
+  background: #ea6227;
+  padding: 0 5px;
+  font-size: 8px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #fff;
+  line-height: 13px;
+}

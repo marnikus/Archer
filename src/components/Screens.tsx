@@ -52,6 +52,10 @@ export function Controls({ touch }: { touch: boolean }) {
         <Key>ESC</Key>
       </span>
       <span>Pause</span>
+      <span>
+        <Key>F1</Key>
+      </span>
+      <span>All controls — run, sit, hide, weapons &amp; attacks…</span>
     </ul>
   );
 }
@@ -60,11 +64,13 @@ interface TitleProps {
   mode: Mode;
   setMode: (m: Mode) => void;
   onPlay: () => void;
+  onLab?: () => void;
+  onSettings?: () => void;
   best: Best | null;
   touch: boolean;
 }
 
-export function TitleScreen({ mode, setMode, onPlay, best, touch }: TitleProps) {
+export function TitleScreen({ mode, setMode, onPlay, onLab, onSettings, best, touch }: TitleProps) {
   return (
     <div className="absolute inset-0 flex items-center justify-center md:justify-start md:pl-[6vw]">
       <Card>
@@ -106,6 +112,16 @@ export function TitleScreen({ mode, setMode, onPlay, best, touch }: TitleProps) 
             Best ({mode}): {best.score.toLocaleString()} pts · {best.arrows} arrows · {fmtTime(best.time)}
           </div>
         )}
+        {onSettings && (
+          <button onClick={onSettings} className="mt-2 w-full rounded-2xl border-2 border-[#E6E9F5] bg-white/70 py-2.5 text-sm font-black text-[#4C372A] transition-all hover:border-[#CADBF5] hover:bg-white">
+            ⚙ Settings <span className="font-semibold text-[#72625D]">· character layers</span>
+          </button>
+        )}
+        {onLab && (
+          <button onClick={onLab} className="mt-2 w-full rounded-2xl border-2 border-[#E6E9F5] bg-white/70 py-2.5 text-sm font-black text-[#4C372A] transition-all hover:border-[#CADBF5] hover:bg-white">
+            🎬 Animation Test Lab <span className="font-semibold text-[#72625D]">· motion workshop</span>
+          </button>
+        )}
         <div className="mt-5 border-t border-[#E6E9F5] pt-4">
           <Controls touch={touch} />
         </div>
@@ -118,12 +134,13 @@ interface PauseProps {
   onResume: () => void;
   onRestart: () => void;
   onTitle: () => void;
+  onSettings?: () => void;
   muted: boolean;
   onMute: () => void;
   touch: boolean;
 }
 
-export function PauseScreen({ onResume, onRestart, onTitle, muted, onMute, touch }: PauseProps) {
+export function PauseScreen({ onResume, onRestart, onTitle, onSettings, muted, onMute, touch }: PauseProps) {
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-[#4C372A]/20">
       <Card>
@@ -141,6 +158,11 @@ export function PauseScreen({ onResume, onRestart, onTitle, muted, onMute, touch
           <button onClick={onMute} className="btn-soft">
             {muted ? '🔇 Sound off' : '🔊 Sound on'}
           </button>
+          {onSettings && (
+            <button onClick={onSettings} className="btn-soft col-span-2">
+              ⚙ Settings · character layers
+            </button>
+          )}
           <button onClick={onTitle} className="btn-soft col-span-2">
             Quit to title
           </button>

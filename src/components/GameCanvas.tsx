@@ -53,11 +53,19 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       KeyS: 'down',
     };
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
-      if (e.repeat) return;
+      if (e.repeat) {
+        if (e.code === 'Tab') e.preventDefault();
+        return;
+      }
       const k = keyMap[e.code];
       if (k) {
         game.setKey(k, true);
+        return;
+      }
+      if (game.hotkeyDown(e.code)) {
+        e.preventDefault();
         return;
       }
       if (e.code === 'Space') {
@@ -71,6 +79,7 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
+      game.hotkeyUp(e.code);
       const k = keyMap[e.code];
       if (k) game.setKey(k, false);
       else if (e.code === 'Space') game.releaseFire();
@@ -80,6 +89,7 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       game.setKey('right', false);
       game.setKey('up', false);
       game.setKey('down', false);
+      game.releaseAllKeys();
       game.releaseFire();
     };
     window.addEventListener('keydown', onKeyDown);

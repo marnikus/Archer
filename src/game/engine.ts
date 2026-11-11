@@ -4,8 +4,6 @@ import {
   RIG,
   DEG,
   art,
-  archerGeom,
-  drawArcher,
   drawArrowArt,
   drawBowItem,
   drawQuiverItem,
@@ -26,9 +24,11 @@ import {
   TARGET_K,
   TARGET_CENTER_UP,
   TARGET_RY_ART,
-  type ArcherVis,
 } from './art';
 import { AudioSys } from './audio';
+import { Animator, ATTACKS, isHide, isSit, type BaseState, type GaitKey, type Reaction } from '../rig/animator';
+import { HOTKEYS } from './hotkeys';
+import { drawRig, drawHatLoose, type WeaponKind } from '../rig/rig';
 
 export type Mode = 'normal' | 'hard';
 export type Phase = 'title' | 'playing' | 'paused' | 'victory' | 'gameover';
@@ -93,6 +93,9 @@ export interface HudState {
   slowmo: boolean;
   result: Result | null;
   best: Best | null;
+  weapon: WeaponKind;
+  weaponReady: boolean;
+  stance: string;
 }
 
 interface Arrow {
@@ -169,6 +172,8 @@ interface Archer {
   victory: boolean;
   firedOnce: boolean;
   hintUnarmedT: number;
+  pickupT: number;
+  attackT: number;
 }
 
 interface TargetState {
@@ -250,8 +255,26 @@ export class Game {
   onPhase: ((p: Phase) => void) | null = null;
   startArrowVisible = true;
 
+  /** Layered paper-rig animator (shared with the Animation Test Lab). */
+  anim: Animator;
+  private lastAnimPose: Pose = 'idle';
+  /** Demo animation playing on the game character (cancelled by gameplay input). */
+  private animDemo: { name: string; fired: boolean } | null = null;
+
+  private makeAnim() {
+    const an = new Animator();
+    an.external = true;
+    an.params.carryMode = 'slung';
+    an.onStep = (foot) => {
+      if (this.phase === 'playing') this.audio.footstep(foot === 'front');
+    };
+    an.onEvent = (e) => this.onAnimEvent(e);
+    return an;
+  }
+
   constructor(audio: AudioSys) {
     this.audio = audio;
+    this.anim = this.makeAnim();
     this.isTouch = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches;
     this.buildDecor();
     for (let i = 0; i < 70; i++) {
@@ -352,7 +375,21 @@ export class Game {
       victory: false,
       firedOnce: false,
       hintUnarmedT: 0,
+      pickupT: 0,
+      attackT: 0,
     };
+    this.anim = this.makeAnim();
+    this.lastAnimPose = 'idle';
+    this.animDemo = null;
+    this.weapon = 'unarmed';
+    this.weaponReady = false;
+    this.hold = null;
+    this.peekDir = null;
+    this.moveMode = 'normal';
+    this.walkStyle = 'auto';
+    this.autoWalk = null;
+    this.runHeld = false;
+    this.hintMsg = '';
     this.pickups = [
       { kind: 'bow', x: CFG.bow.x, collected: false, fly: 0, fx: 0, fy: 0, phase: 0 },
       { kind: 'quiver', x: CFG.quiver.x, collected: false, fly: 0, fx: 0, fy: 0, phase: 1.7 },
@@ -453,7 +490,7 @@ export class Game {
   }
 
   armed() {
-    return this.archer.hasBow && this.archer.hasQuiver;
+    return this.archer.hasBow && this.archer.hasQuiver && this.weapon === 'bow';
   }
 
   canShootMore() {
@@ -469,10 +506,17 @@ export class Game {
       a.pose = 'shake';
       a.poseT = 0;
       a.hintUnarmedT = 1.6;
+      this.hintMsg = a.hasBow && a.hasQuiver ? 'Press 1 to take out your bow' : '';
       this.audio.shake();
       return;
     }
-    if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight()) return;
+    if (this.hold) {
+      // stand up / come out of hiding first; press again to shoot
+      this.hold = null;
+      this.peekDir = null;
+      return;
+    }
+    if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight() || a.attackT > 0 || this.anim.seq) return;
     this.beginCharge();
   }
 
@@ -482,6 +526,8 @@ export class Game {
 
   private beginCharge() {
     const a = this.archer;
+    this.hold = null;
+    this.peekDir = null;
     a.charging = true;
     a.power = 0;
     a.meterDir = 1;
@@ -498,6 +544,7 @@ export class Game {
     this.touchAim.active = false;
     if (a.pose === 'draw') a.pose = 'aim';
     this.audio.creakStop();
+    this.anim.shootAim();
   }
 
   releaseFire() {
@@ -612,69 +659,11 @@ export class Game {
     return TARGET_RY_ART * TARGET_K * this.target.scale;
   }
 
-  private archerVis(): ArcherVis {
-    const a = this.archer;
-    const t = this.time;
-    const walking = a.pose === 'walk';
-    const bob = walking ? Math.abs(Math.sin(a.walkPhase)) * 7 : Math.sin(t * 2.2) * 2 + 2;
-    let jump = 0;
-    let squash = 1;
-    let headShake = 0;
-    let headTilt = 0;
-    let eyeScale = 1;
-    let smile = 0;
-    let spinX = 1;
-    const legSwing = walking ? Math.sin(a.walkPhase) * 0.45 : 0;
-    if (a.pose === 'celebrate') {
-      const p = Math.min(1, a.poseT / 0.7);
-      jump = Math.sin(p * Math.PI) * 70;
-      smile = 1;
-    }
-    if (a.pose === 'victory') {
-      jump = Math.abs(Math.sin(t * 5)) * 50;
-      spinX = Math.cos(t * 4);
-      if (Math.abs(spinX) < 0.15) spinX = 0.15 * (spinX < 0 ? -1 : 1);
-      smile = 1;
-    }
-    if (a.pose === 'sad') {
-      squash = 0.95;
-      headTilt = -0.1;
-      eyeScale = 0.5;
-    }
-    if (a.pose === 'shake') headShake = Math.sin(a.poseT * 28) * 9 * (1 - a.poseT / 0.6);
-    if (a.blinkT > 0) eyeScale = Math.min(eyeScale, 0.12);
-    const standing = !walking && a.pose !== 'celebrate' && a.pose !== 'victory' && a.pose !== 'sad' && a.pose !== 'shake';
-    return {
-      bob,
-      jump,
-      squash,
-      headShake,
-      headTilt,
-      eyeScale,
-      legSwing,
-      armFront: a.armFront,
-      armBack: a.armBack,
-      bowRot: a.bowRot,
-      draw: a.drawVis,
-      across: a.across,
-      showArrow: this.armed() && standing && this.canShootMore() && a.pose !== 'release' && !this.arrowInFlight(),
-      hasBow: a.hasBow,
-      hasQuiver: a.hasQuiver,
-      smile,
-      spinX,
-      bodyTilt: walking ? Math.sin(a.walkPhase) * 0.035 : 0,
-      hipShift: walking ? Math.sin(a.walkPhase) * 4 : 0,
-      beardLag: walking ? Math.sin(a.walkPhase - 0.6) * 0.025 : 0,
-    };
-  }
-
   /** Launch point: arrow tip when the string is at rest, for the exact aim angle (independent of draw). */
   private launchPoint() {
-    const vis = this.archerVis();
-    const th = this.archer.angle * DEG;
-    const g = archerGeom({ armFront: th, bowRot: th, draw: 0 });
     const a = this.archer;
-    return { x: a.x + (g.tip.x - RIG.FEET.x), y: a.y + (g.tip.y - RIG.FEET.y) - vis.bob - vis.jump };
+    const tip = this.anim.launchTip(a.angle * DEG);
+    return { x: a.x + tip.x, y: a.y + tip.y + this.anim.pose.y };
   }
 
   /** Power (0-100) needed to hit the target centre at the current angle, ignoring wind. -1 if unreachable. */
@@ -721,6 +710,7 @@ export class Game {
     a.pose = 'release';
     a.poseT = 0;
     a.firedOnce = true;
+    this.anim.shootRelease('aim');
     this.touchAim.active = false;
     this.audio.creakStop();
     this.audio.twang(power01);
@@ -739,6 +729,59 @@ export class Game {
     this.audio.pickup();
     this.burst(p.x, G - 90, 14, ['#FFFFFF', '#FFF4D6', '#CADBF5'], 260, 's', 200);
     this.ring(p.x, G - 90, '#FFFFFF', 60);
+    // physical pickup: stop, face the item, reach down, lift and attach
+    const a = this.archer;
+    if (a.charging) this.cancelCharge();
+    a.facing = p.x < a.x ? -1 : 1;
+    a.pickupT = p.kind === 'quiver' ? 2.15 : 1.95;
+    if (a.pose === 'walk') {
+      a.pose = this.armed() ? 'aim' : 'idle';
+      a.poseT = 0;
+    }
+    this.anim.pickup(p.kind);
+  }
+
+  private onAnimEvent(e: string) {
+    const [what, kind] = e.split(':');
+    if (what === 'attack-start') {
+      this.audio.whoosh();
+      return;
+    }
+    if (what === 'attack-hit') {
+      const t = this.weaponTip();
+      const steel = kind === 'sword' || kind === 'axe' || kind === 'spear';
+      this.burst(t.x, t.y, kind === 'unarmed' ? 8 : 16, steel ? ['#FFFFFF', '#CDD6E6', PAL.gold] : ['#FFFFFF', PAL.orange2, PAL.gold], 360, 's', 300);
+      this.ring(t.x, t.y, '#FFFFFF', kind === 'unarmed' ? 40 : 70);
+      if (kind === 'crossbow') this.audio.twang(0.8);
+      else this.audio.pop();
+      return;
+    }
+    if (what === 'detach' && kind === 'bow') {
+      this.archer.hasBow = false;
+      if (this.weapon === 'bow') this.weapon = 'unarmed';
+      this.dropPickup('bow');
+      return;
+    }
+    if (what === 'detach' && kind === 'quiver') {
+      this.archer.hasQuiver = false;
+      return;
+    }
+    if (what === 'seq-end' && (kind === 'pickup-bow' || kind === 'pickup-quiver')) {
+      if (this.armed()) this.anim.armedReady();
+      return;
+    }
+    if (what === 'seq-end' && kind === 'unequip-quiver') {
+      this.dropPickup('quiver');
+      return;
+    }
+    if (kind !== 'bow' && kind !== 'quiver') return;
+    const p = this.pickups.find((q) => q.kind === kind && q.collected);
+    if (!p) return;
+    if (what === 'grab') p.fly = 1;
+    if (what === 'attach' && !(kind === 'bow' ? this.archer.hasBow : this.archer.hasQuiver)) {
+      p.fly = 1;
+      this.onAttach(p);
+    }
   }
 
   private onAttach(p: Pickup) {
@@ -752,6 +795,7 @@ export class Game {
       this.quiverKey++;
       this.addFloat(a.x, a.y - 540, 'Arrows acquired!', PAL.orange, 32);
     }
+    if (p.kind === 'bow' || (this.weapon === 'unarmed' && a.hasBow)) this.weapon = 'bow';
     this.audio.pop();
     this.ring(a.x, a.y - 250, '#FFFFFF', 90);
     if (this.armed()) {
@@ -912,10 +956,12 @@ export class Game {
     }
     if (this.phase === 'title') {
       this.updateArcherIdle(dt);
+      this.driveAnim(dt);
       this.updateCamera(dtr);
       return;
     }
     this.updateArcher(dt);
+    this.driveAnim(dt);
     this.updatePickups(dt);
     this.updateTarget(dt);
     this.updateWind(dt);
@@ -954,6 +1000,421 @@ export class Game {
     }
   }
 
+  // ================================================================== animation control
+  /** Equipped weapon (the bow needs the pickup first). */
+  weapon: WeaponKind = 'unarmed';
+  weaponReady = false;
+  /** Sustained stand-still state chosen with the hotkeys (sit, hide, idle style…). Walking clears it. */
+  private hold: BaseState | null = null;
+  private peekDir: 'left' | 'right' | null = null;
+  private moveMode: 'normal' | 'sneak' | 'creep' = 'normal';
+  private walkStyle: 'auto' | GaitKey = 'auto';
+  private runHeld = false;
+  private autoWalk: { x: number; then: () => void } | null = null;
+  private hintMsg = '';
+
+  private static readonly GAIT_SPEED: Record<string, number> = {
+    'walk-casual': 190, walk: 250, 'walk-power': 330, 'walk-brisk': 280, 'walk-tired': 150, run: 520, sneak: 110, creep: 55,
+  };
+  private static readonly WALK_STYLES: Array<'auto' | GaitKey> = ['auto', 'walk-casual', 'walk', 'walk-power', 'walk-brisk', 'walk-tired'];
+  private static readonly HOLD_STATES = ['idle', 'idle-alert', 'idle-tired', 'idle-bored', 'idle-armed', 'sit', 'sit-look', 'sit-shift', 'hide', 'hide-idle', 'peek-left', 'peek-right'];
+  private static readonly TIP_LEN: Partial<Record<WeaponKind, number>> = { unarmed: 50, sword: 190, spear: 340, staff: 300, axe: 150, crossbow: 150 };
+  private static readonly STYLE_LABEL: Record<string, string> = {
+    auto: 'Default walk', 'walk-casual': 'Casual walk', walk: 'Normal walk', 'walk-power': 'Power walk', 'walk-brisk': 'Brisk walk', 'walk-tired': 'Tired walk',
+    sit: 'Sit', 'sit-look': 'Sit · look around', 'sit-shift': 'Sit · shift weight', hide: 'Hide', 'hide-idle': 'Hide · idle',
+    idle: 'Idle · neutral', 'idle-alert': 'Idle · alert', 'idle-tired': 'Idle · tired', 'idle-bored': 'Idle · bored', 'idle-armed': 'Idle · armed',
+  };
+
+  private gait(): GaitKey {
+    if (this.runHeld) return 'run';
+    if (this.moveMode !== 'normal') return this.moveMode;
+    if (this.walkStyle !== 'auto') return this.walkStyle;
+    return this.armed() ? 'walk-brisk' : 'walk';
+  }
+
+  private moveSpeed() {
+    if (!this.runHeld && this.moveMode === 'normal' && this.walkStyle === 'auto') return CFG.archer.walkSpeed;
+    return Game.GAIT_SPEED[this.gait()];
+  }
+
+  /** Short label for the HUD describing the active stance / gait modifiers. */
+  private stanceLabel() {
+    const parts: string[] = [];
+    if (this.hold) parts.push(Game.STYLE_LABEL[this.hold] ?? this.hold);
+    if (this.runHeld) parts.push('Run');
+    else if (this.moveMode !== 'normal') parts.push(this.moveMode === 'sneak' ? 'Sneak' : 'Creep');
+    else if (this.walkStyle !== 'auto') parts.push(Game.STYLE_LABEL[this.walkStyle]);
+    return parts.join(' · ');
+  }
+
+  private say(text: string) {
+    const a = this.archer;
+    this.addFloat(a.x, a.y - 560, text, PAL.orange, 26);
+  }
+
+  /** True when a player-triggered animation may start right now. */
+  private canAct() {
+    const a = this.archer;
+    return this.phase === 'playing' && !a.victory && a.pickupT <= 0 && a.attackT <= 0 && !this.anim.seq && !this.anim.attacking;
+  }
+
+  private beginAction() {
+    if (this.archer.charging) this.cancelCharge();
+    this.autoWalk = null;
+  }
+
+  // ---- hotkeys ---------------------------------------------------------
+  /** Returns true when the key was consumed. */
+  hotkeyDown(code: string): boolean {
+    if (code === 'ShiftLeft' || code === 'ShiftRight') {
+      this.runHeld = true;
+      return false; // do not swallow Shift
+    }
+    const hk = HOTKEYS.find((h) => h.code === code);
+    if (!hk) return false;
+    if (hk.action === 'help' || hk.action === 'shoot' || hk.action === 'pause' || hk.action === 'mute') return false;
+    if (this.phase !== 'playing') return false;
+    this.runAction(hk.action);
+    return true;
+  }
+
+  hotkeyUp(code: string) {
+    if (code === 'ShiftLeft' || code === 'ShiftRight') this.runHeld = false;
+    if ((code === 'KeyQ' && this.peekDir === 'left') || (code === 'KeyE' && this.peekDir === 'right')) this.peekDir = null;
+  }
+
+  releaseAllKeys() {
+    this.runHeld = false;
+    this.peekDir = null;
+  }
+
+  runAction(action: string) {
+    const [kind, arg] = action.split(':');
+    switch (kind) {
+      case 'play':
+        this.playAnim(arg);
+        break;
+      case 'equip':
+        this.equip(arg as WeaponKind);
+        break;
+      case 'ready':
+        this.toggleReady();
+        break;
+      case 'attack':
+        this.attack();
+        break;
+      case 'cycle':
+        this.cycle(arg);
+        break;
+      case 'peek':
+        this.peek(arg as 'left' | 'right');
+        break;
+      case 'hat':
+        this.hatAction(arg);
+        break;
+      case 'drop':
+        this.dropItem(arg as 'bow' | 'quiver');
+        break;
+    }
+  }
+
+  // ---- inventory -------------------------------------------------------
+  equip(kind: WeaponKind) {
+    const a = this.archer;
+    if (this.phase !== 'playing' || a.victory || a.pickupT > 0 || this.anim.seq) return;
+    if (kind === 'bow' && !a.hasBow) {
+      this.say('Find the bow first');
+      return;
+    }
+    if (kind === this.weapon) return;
+    this.beginAction();
+    this.animDemo = null;
+    this.hold = null;
+    this.peekDir = null;
+    this.weapon = kind;
+    this.weaponReady = false;
+    if (a.pose === 'aim' || a.pose === 'draw') a.pose = 'idle';
+    if (kind === 'bow') {
+      a.facing = -1;
+      if (this.armed()) a.pose = 'aim';
+    }
+    this.audio.pop();
+    this.say(kind === 'unarmed' ? 'Hands free' : kind[0].toUpperCase() + kind.slice(1));
+  }
+
+  private toggleReady() {
+    if (!this.canAct()) return;
+    if (this.weapon === 'bow' || this.weapon === 'unarmed') return;
+    this.weaponReady = !this.weaponReady;
+    this.say(this.weaponReady ? 'Ready' : 'Carry');
+  }
+
+  attack() {
+    const a = this.archer;
+    if (this.phase !== 'playing' || a.victory || a.pickupT > 0 || a.attackT > 0 || a.charging) return;
+    if (this.weapon === 'bow') {
+      this.say(a.hasQuiver ? 'Hold SPACE to shoot' : 'No arrows yet');
+      return;
+    }
+    if (this.hold && isSit(this.hold)) {
+      this.hold = null; // stand up first
+      return;
+    }
+    if (this.anim.seq || this.anim.attacking) return;
+    this.hold = null;
+    this.peekDir = null;
+    this.autoWalk = null;
+    this.animDemo = null;
+    this.driveAnimInputs();
+    if (this.anim.attack()) a.attackT = ATTACKS[this.weapon]?.dur ?? 0.8;
+  }
+
+  private dropItem(kind: 'bow' | 'quiver') {
+    const a = this.archer;
+    if (!this.canAct()) return;
+    if (kind === 'bow') {
+      if (!a.hasBow) return;
+      if (this.weapon !== 'bow') {
+        this.say('Take out the bow first (1)');
+        return;
+      }
+    } else if (!a.hasQuiver) return;
+    if (this.weapon !== 'bow' && this.weapon !== 'unarmed') {
+      this.say('Put the weapon away first (0)');
+      return;
+    }
+    this.beginAction();
+    this.hold = null;
+    this.peekDir = null;
+    this.animDemo = null;
+    this.driveAnimInputs();
+    this.anim.unequip(kind);
+  }
+
+  /** The unequip animation finished: leave the item on the ground in front of the archer. */
+  private dropPickup(kind: 'bow' | 'quiver') {
+    const a = this.archer;
+    const p = this.pickups.find((q) => q.kind === kind);
+    if (!p) return;
+    const reach = kind === 'bow' ? 128 : 112;
+    p.x = clamp(a.x + (a.facing === -1 ? -reach : reach), CFG.archer.minX + 40, CFG.archer.maxX);
+    p.collected = false;
+    p.fly = 0;
+  }
+
+  // ---- stances / styles ------------------------------------------------
+  private static nextIn<T>(list: T[], cur: T | null): T | null {
+    const i = cur === null ? -1 : list.indexOf(cur);
+    if (i < 0) return list[0];
+    return i + 1 < list.length ? list[i + 1] : null;
+  }
+
+  private cycle(what: string) {
+    if (!this.canAct()) return;
+    this.beginAction();
+    this.peekDir = null;
+    switch (what) {
+      case 'move':
+        this.moveMode = this.moveMode === 'normal' ? 'sneak' : this.moveMode === 'sneak' ? 'creep' : 'normal';
+        this.say(this.moveMode === 'normal' ? 'Normal pace' : this.moveMode === 'sneak' ? 'Sneaking' : 'Creeping');
+        break;
+      case 'walk': {
+        const i = Game.WALK_STYLES.indexOf(this.walkStyle);
+        this.walkStyle = Game.WALK_STYLES[(i + 1) % Game.WALK_STYLES.length];
+        this.say(Game.STYLE_LABEL[this.walkStyle]);
+        break;
+      }
+      case 'sit':
+        this.hold = Game.nextIn(['sit', 'sit-look', 'sit-shift'] as BaseState[], this.hold && isSit(this.hold) ? this.hold : null);
+        this.say(this.hold ? Game.STYLE_LABEL[this.hold] : 'Stand');
+        break;
+      case 'hide':
+        this.hold = Game.nextIn(['hide', 'hide-idle'] as BaseState[], this.hold && isHide(this.hold) ? this.hold : null);
+        this.say(this.hold ? Game.STYLE_LABEL[this.hold] : 'Stand');
+        break;
+      case 'idle': {
+        const list = ['idle', 'idle-alert', 'idle-tired', 'idle-bored', 'idle-armed'] as BaseState[];
+        this.hold = Game.nextIn(list, this.hold && list.includes(this.hold) ? this.hold : null);
+        this.say(this.hold ? Game.STYLE_LABEL[this.hold] : 'Idle · automatic');
+        break;
+      }
+    }
+  }
+
+  private peek(dir: 'left' | 'right') {
+    if (!this.canAct()) return;
+    this.beginAction();
+    if (!this.hold || !isHide(this.hold)) this.hold = 'hide';
+    this.peekDir = dir;
+  }
+
+  // ---- hat ---------------------------------------------------------------
+  private hatAction(what: string) {
+    if (!this.canAct()) return;
+    const an = this.anim;
+    if (an.hat === 'ground') {
+      this.hatPickup();
+      return;
+    }
+    if (this.weapon !== 'bow' && this.weapon !== 'unarmed') {
+      this.say('Put the weapon away first (0)');
+      return;
+    }
+    if (what === 'toggle') {
+      if (an.hat === 'head') this.playAnim('hat-off');
+      else if (an.hat === 'hand') this.playAnim('hat-on');
+    } else if (what === 'drop') {
+      if (an.hat === 'hand') this.playAnim('hat-drop');
+      else this.say('Take the hat off first (T)');
+    }
+  }
+
+  private hatPickup() {
+    const a = this.archer;
+    const an = this.anim;
+    const prop = an.props.find((q) => q.kind === 'hat');
+    if (!prop) {
+      an.hat = 'head';
+      return;
+    }
+    if (this.weapon !== 'bow' && this.weapon !== 'unarmed') {
+      this.say('Put the weapon away first (0)');
+      return;
+    }
+    this.beginAction();
+    this.hold = null;
+    this.peekDir = null;
+    const facing: -1 | 1 = prop.x < a.x ? -1 : 1;
+    this.autoWalk = {
+      x: prop.x + (facing === -1 ? 80 : -80),
+      then: () => {
+        a.facing = facing;
+        an.facing = facing;
+        an.startSeq('hat-pickup', 1.5);
+      },
+    };
+  }
+
+  // ---- animation playback ---------------------------------------------
+  /** Play any motion-library animation on the live character. Walking or shooting cancels demo ones. */
+  playAnim(name: string) {
+    if (this.phase !== 'playing' || !this.canAct()) return;
+    // weapon names from the animation panel map onto the inventory
+    const wk = name.replace(/-ready$/, '');
+    if (['crossbow', 'spear', 'sword', 'staff', 'axe'].includes(wk)) {
+      this.equip(wk as WeaponKind);
+      this.weaponReady = name.endsWith('-ready');
+      return;
+    }
+    this.beginAction();
+    if (Game.HOLD_STATES.includes(name)) {
+      this.animDemo = null;
+      this.peekDir = null;
+      this.hold = name as BaseState;
+      return;
+    }
+    if (name === 'hat-pickup') {
+      this.hatPickup();
+      return;
+    }
+    if (name.startsWith('hat-') && this.weapon !== 'bow' && this.weapon !== 'unarmed') {
+      this.say('Put the weapon away first (0)');
+      return;
+    }
+    this.animDemo = { name, fired: false };
+  }
+
+  private applyDemo(an: Animator) {
+    const d = this.animDemo!;
+    const name = d.name;
+    const speed = Game.GAIT_SPEED[name];
+    if (speed !== undefined) {
+      an.driveSpeed = speed;
+      an.setBase(name as BaseState);
+      return;
+    }
+    an.driveSpeed = 0;
+    // one-shot motions: trigger once, release the override when they finish
+    if (!d.fired) {
+      if (name === 'jump' || name === 'hop') an.setBase(name);
+      else if (name === 'hat-off') an.hatTakeOff();
+      else if (name === 'hat-on') an.hatPutOn();
+      else if (name === 'hat-drop') an.hatDrop();
+      else an.react(name as Reaction);
+      d.fired = true;
+    } else if (!an.reaction && an.jump.phase === 'none' && !an.seq) {
+      this.animDemo = null;
+    }
+  }
+
+  private driveAnimInputs() {
+    const a = this.archer;
+    const an = this.anim;
+    an.x = a.x; // keep animator space == world space (dropped hats live there)
+    an.facing = a.facing;
+    an.hasBow = a.hasBow;
+    an.hasQuiver = a.hasQuiver;
+    const w: WeaponKind = this.weapon === 'bow' && !a.hasBow ? 'unarmed' : this.weapon;
+    if (an.weapon !== w) an.setWeapon(w);
+    an.weaponReady = this.weaponReady;
+  }
+
+  /** World position of the weapon tip (or fist) for hit effects. */
+  private weaponTip() {
+    const a = this.archer;
+    const an = this.anim;
+    const h = an.skel.handF;
+    const rot = an.pose.weapon.rot ?? an.skel.aFF + Math.PI;
+    const len = Game.TIP_LEN[this.weapon] ?? 60;
+    const lx = h.x + Math.sin(rot) * len;
+    const ly = h.y - Math.cos(rot) * len + an.pose.y;
+    return { x: a.x + (a.facing === -1 ? lx : -lx), y: a.y + ly };
+  }
+
+  /** Translate the game's archer state into animator intents, then step the rig. */
+  private driveAnim(dt: number) {
+    const a = this.archer;
+    const an = this.anim;
+    this.driveAnimInputs();
+    const armed = this.armed();
+    const walking = a.pose === 'walk';
+    // real gameplay always wins over a demo animation
+    if (walking || a.charging || a.pickupT > 0 || a.victory) this.animDemo = null;
+    const demoing = this.animDemo !== null && this.phase === 'playing';
+    if (demoing) {
+      if (an.shoot.stage !== 'none') an.shootCancel();
+      an.showArrow = false;
+      this.applyDemo(an);
+    } else {
+      an.driveSpeed = walking ? this.moveSpeed() : 0;
+      if (walking) an.setBase(this.gait());
+      else if (this.peekDir) an.setBase(this.peekDir === 'left' ? 'peek-left' : 'peek-right');
+      else if (this.hold) an.setBase(this.hold);
+      else if (armed) an.setBase('idle-alert');
+      else an.setBase(this.weapon !== 'unarmed' && this.weapon !== 'bow' && this.weaponReady ? 'idle-armed' : 'idle');
+      const standingArmed =
+        armed && this.phase === 'playing' && !a.victory && a.pickupT <= 0 && !an.seq && !this.hold && (a.pose === 'aim' || a.pose === 'draw' || a.pose === 'release');
+      if (standingArmed) {
+        an.shootAim(a.angle * DEG);
+        if (a.charging) an.shootDraw(0.4 + 0.6 * (a.power / 100), true);
+        an.showArrow = this.canShootMore() && a.pose !== 'release' && !this.arrowInFlight();
+      } else {
+        an.showArrow = false;
+        const st = an.shoot.stage;
+        if (st === 'raise' || st === 'aim' || st === 'draw' || st === 'hold') an.shootRecover();
+      }
+    }
+    if (a.pose !== this.lastAnimPose) {
+      if (a.pose === 'celebrate') an.react('celebrate');
+      else if (a.pose === 'sad') an.react('disappointed');
+      else if (a.pose === 'shake') an.react('shake');
+      else if (a.pose === 'victory') an.react('victory');
+      this.lastAnimPose = a.pose;
+    }
+    if (a.pose === 'victory' && !an.reaction) an.react('victory');
+    an.update(dt);
+  }
+
   private updateArcherIdle(dt: number) {
     const a = this.archer;
     a.blinkNext -= dt;
@@ -974,6 +1435,30 @@ export class Game {
     let move = (this.keys.right ? 1 : 0) - (this.keys.left ? 1 : 0) + this.touchMove;
     move = clamp(move, -1, 1);
     if (a.victory || this.phase !== 'playing') move = 0;
+    if (a.attackT > 0) a.attackT -= dt;
+    if (a.pickupT > 0) {
+      a.pickupT -= dt;
+      move = 0;
+    }
+    // walking out of a sit / hide / idle-style hold ends it (sitting needs the stand-up animation first)
+    if (move !== 0) {
+      this.autoWalk = null;
+      if (this.hold) {
+        const wasSit = isSit(this.hold as BaseState);
+        this.hold = null;
+        this.peekDir = null;
+        if (wasSit) move = 0;
+      }
+    } else if (this.autoWalk && this.phase === 'playing' && !a.victory) {
+      const d = this.autoWalk.x - a.x;
+      if (Math.abs(d) < 10) {
+        const then = this.autoWalk.then;
+        this.autoWalk = null;
+        then();
+      } else move = d < 0 ? -1 : 1;
+    }
+    // sequences (sit/stand, hat, equipment) and attacks plant the feet
+    if (this.anim.seq || a.attackT > 0) move = 0;
     if (a.charging && move !== 0) this.cancelCharge();
 
     // transient pose timers
@@ -985,7 +1470,7 @@ export class Game {
     if (a.pose === 'shake' && a.poseT > 0.6) a.pose = base;
 
     if (move !== 0) {
-      a.x = clamp(a.x + move * CFG.archer.walkSpeed * dt, CFG.archer.minX, CFG.archer.maxX);
+      a.x = clamp(a.x + move * this.moveSpeed() * dt, CFG.archer.minX, CFG.archer.maxX);
       a.facing = move < 0 ? -1 : 1;
       a.walkPhase += dt * 9;
       if (a.pose !== 'walk') {
@@ -993,11 +1478,6 @@ export class Game {
         a.walkPhase = 0;
       }
       this.startArrowVisible = false;
-      const flag = Math.floor(a.walkPhase / Math.PI);
-      if (flag !== a.stepFlag) {
-        a.stepFlag = flag;
-        this.audio.footstep(flag % 2 === 0);
-      }
     } else if (a.pose === 'walk') {
       a.pose = base;
       a.poseT = 0;
@@ -1032,8 +1512,8 @@ export class Game {
     // visual smoothing
     const walking = a.pose === 'walk';
     const standingArmed = armed && (a.pose === 'aim' || a.pose === 'draw' || a.pose === 'release');
-    const frontGoal = standingArmed ? a.angle * DEG : RIG.ARM_REST_FRONT + (walking ? Math.sin(a.walkPhase) * (a.hasBow ? 0.12 : 0.38) : 0);
-    const backGoal = a.charging ? RIG.ARM_REST_BACK + 0.3 : RIG.ARM_REST_BACK + (walking ? -Math.sin(a.walkPhase + 0.2) * (a.hasQuiver ? 0.22 : 0.48) : 0);
+    const frontGoal = standingArmed ? a.angle * DEG : RIG.ARM_REST_FRONT + (walking ? Math.sin(a.walkPhase) * 0.45 : 0);
+    const backGoal = a.charging ? RIG.ARM_REST_BACK + 0.3 : RIG.ARM_REST_BACK + (walking ? -Math.sin(a.walkPhase) * 0.45 : 0);
     const bowGoal = standingArmed ? a.angle * DEG : 0;
     a.armFront = lerpRate(a.armFront, frontGoal, 12, dt);
     a.armBack = lerpRate(a.armBack, backGoal, 12, dt);
@@ -1043,17 +1523,10 @@ export class Game {
   }
 
   private updatePickups(dt: number) {
+    void dt;
     const a = this.archer;
     for (const p of this.pickups) {
-      if (!p.collected) {
-        if (Math.abs(a.x - p.x) < 80 && !a.victory) this.collect(p);
-      } else if (p.fly < 1) {
-        p.fly += dt / 0.45;
-        if (p.fly >= 1) {
-          p.fly = 1;
-          this.onAttach(p);
-        }
-      }
+      if (!p.collected && Math.abs(a.x - p.x) < 80 && !a.victory && a.pickupT <= 0 && !this.anim.seq) this.collect(p);
     }
   }
 
@@ -1206,7 +1679,7 @@ export class Game {
     let want = '';
     if (this.phase === 'playing' && !a.victory) {
       const dirTo = (x: number) => (x < a.x ? '←' : '→');
-      if (a.hintUnarmedT > 0) want = 'Need bow + arrows!';
+      if (a.hintUnarmedT > 0) want = this.hintMsg || 'Need bow + arrows!';
       else if (!a.hasBow && !a.hasQuiver) want = 'Head left ← to find your gear';
       else if (!a.hasQuiver) want = `Find the arrows ${dirTo(CFG.quiver.x)}`;
       else if (!a.hasBow) want = `Find the bow ${dirTo(CFG.bow.x)}`;
@@ -1486,18 +1959,10 @@ export class Game {
         else drawQuiverItem(ctx);
         ctx.restore();
       } else if (p.fly < 1) {
-        const e = p.fly * p.fly * (3 - 2 * p.fly);
-        const a = this.archer;
-        const tx = a.x;
-        const ty = a.y - 250;
-        const x = p.fx + (tx - p.fx) * e;
-        const y = p.fy + (ty - p.fy) * e;
-        const sc = 1 - 0.75 * e;
         ctx.save();
-        ctx.globalAlpha = 1 - e * e;
-        ctx.translate(x, y + 90 * sc);
-        if (p.kind === 'bow') drawBowItem(ctx, 0.65 * sc);
-        else drawQuiverItem(ctx, 0.65 * sc);
+        ctx.translate(p.x, G - 6);
+        if (p.kind === 'bow') drawBowItem(ctx);
+        else drawQuiverItem(ctx);
         ctx.restore();
       }
     }
@@ -1531,21 +1996,30 @@ export class Game {
       ctx.fill();
     }
 
-    // archer
+    // archer (layered paper-rig, authored facing left)
     {
       const a = this.archer;
-      const vis = this.archerVis();
       ctx.save();
       ctx.translate(a.x, a.y);
       ctx.scale(a.facing === -1 ? 1 : -1, 1);
-      drawArcher(ctx, vis);
+      drawRig(ctx, this.anim.pose, this.anim.skel, { arrowsInQuiver: this.mode === 'hard' ? clamp(this.arrowsLeft, 0, 3) : 3 });
       ctx.restore();
+      // a hat lying on the ground
+      for (const hp of this.anim.props) {
+        if (hp.kind !== 'hat') continue;
+        ctx.save();
+        ctx.translate(hp.x, G + hp.y);
+        ctx.rotate(hp.rot);
+        ctx.scale(1 + (1 - hp.squash) * 0.5, hp.squash);
+        drawHatLoose(ctx);
+        ctx.restore();
+      }
 
       // angle indicator + preview
-      if (this.phase === 'playing' && this.armed() && (a.pose === 'aim' || a.pose === 'draw') && !a.victory && a.facing === -1 && !this.arrowInFlight()) {
-        const g = archerGeom(vis);
-        const hx = a.x + (g.hand.x - RIG.FEET.x);
-        const hy = a.y + (g.hand.y - RIG.FEET.y) - vis.bob - vis.jump;
+      if (this.phase === 'playing' && this.armed() && (a.pose === 'aim' || a.pose === 'draw') && !a.victory && a.facing === -1 && !this.arrowInFlight() && a.pickupT <= 0) {
+        const hf = this.anim.skel.handF;
+        const hx = a.x + hf.x;
+        const hy = a.y + hf.y + this.anim.pose.y;
         const th = a.angle * DEG;
         ctx.save();
         ctx.strokeStyle = 'rgba(114,98,93,0.45)';
@@ -1661,9 +2135,8 @@ export class Game {
       const al = k < 0.25 ? k / 0.25 : k > 6.3 ? Math.max(0, 1 - (k - 6.3) / 0.7) : 1;
       if (al > 0) {
         const a = this.archer;
-        const vis = this.archerVis();
         const bx = a.x;
-        const by = a.y - 440 - vis.jump + Math.sin(t * 3) * 4;
+        const by = a.y - 520 + this.anim.pose.y + Math.sin(t * 3) * 4;
         ctx.save();
         ctx.globalAlpha = al;
         ctx.font = '700 26px Nunito, "Segoe UI", system-ui, sans-serif';
@@ -1742,6 +2215,9 @@ export class Game {
       slowmo: this.timeScale < 0.9,
       result: this.result,
       best: this.best,
+      weapon: this.weapon === 'bow' && !a.hasBow ? 'unarmed' : this.weapon,
+      weaponReady: this.weaponReady,
+      stance: this.stanceLabel(),
     };
   }
 }
