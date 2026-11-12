@@ -43,10 +43,11 @@ export function GameCanvas({ game, onSnapshot }: Props) {
     raf = requestAnimationFrame(loop);
 
     const keyMap: Record<string, 'left' | 'right' | 'up' | 'down'> = {
-      ArrowLeft: 'left',
-      KeyA: 'left',
-      ArrowRight: 'right',
-      KeyD: 'right',
+      // the world is mirrored: screen-right is world-left (toward the target)
+      ArrowLeft: 'right',
+      KeyA: 'right',
+      ArrowRight: 'left',
+      KeyD: 'left',
       ArrowUp: 'up',
       KeyW: 'up',
       ArrowDown: 'down',
@@ -54,6 +55,11 @@ export function GameCanvas({ game, onSnapshot }: Props) {
     };
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (game.cutActive && (e.code === 'Space' || e.code === 'Enter' || e.code === 'Escape')) {
+        e.preventDefault();
+        game.skipCutscene();
+        return;
+      }
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
       if (e.repeat) {
         if (e.code === 'Tab') e.preventDefault();
@@ -62,6 +68,14 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       const k = keyMap[e.code];
       if (k) {
         game.setKey(k, true);
+        return;
+      }
+      if (e.code === 'Minus' || e.code === 'NumpadSubtract') {
+        game.setZoom(game.zoomPref - 0.05);
+        return;
+      }
+      if (e.code === 'Equal' || e.code === 'NumpadAdd') {
+        game.setZoom(game.zoomPref + 0.05);
         return;
       }
       if (game.hotkeyDown(e.code)) {
@@ -111,6 +125,10 @@ export function GameCanvas({ game, onSnapshot }: Props) {
       onPointerDown={(e) => {
         if (e.pointerType === 'touch') game.isTouch = true;
         game.audio.unlock();
+        if (game.cutActive) {
+          game.skipCutscene();
+          return;
+        }
         e.currentTarget.setPointerCapture(e.pointerId);
         game.touchAimStart(e.clientX, e.clientY);
       }}

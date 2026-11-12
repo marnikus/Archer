@@ -18,6 +18,25 @@ function Key({ children }: { children: React.ReactNode }) {
   return <kbd className="inline-block min-w-[26px] rounded-md bg-[#EBEDF8] px-1.5 py-0.5 text-center font-mono text-[11px] font-bold text-[#4C372A] shadow-[inset_0_-2px_0_#D4D7E3]">{children}</kbd>;
 }
 
+/** DEV stepper: how many lives the Spartan has */
+function LivesStepper({ lives, onLives, className = '' }: { lives: number; onLives: (n: number) => void; className?: string }) {
+  const btn = 'h-7 w-7 rounded-lg bg-white text-base font-black text-[#4C372A] shadow-sm transition-colors hover:bg-[#EA6227] hover:text-white';
+  return (
+    <div className={`flex items-center justify-between gap-2 rounded-2xl border-2 border-dashed border-[#CADBF5] bg-white/60 px-3 py-1.5 text-xs font-black text-[#4C6A9A] ${className}`}>
+      <span>🛠 DEV · Spartan lives</span>
+      <span className="flex items-center gap-2">
+        <button type="button" className={btn} onClick={() => onLives(lives - 1)} aria-label="Fewer lives">
+          −
+        </button>
+        <span className="w-14 text-center text-sm tabular-nums text-[#AC2A22]">❤️ ×{lives}</span>
+        <button type="button" className={btn} onClick={() => onLives(lives + 1)} aria-label="More lives">
+          +
+        </button>
+      </span>
+    </div>
+  );
+}
+
 export function Controls({ touch }: { touch: boolean }) {
   if (touch) {
     return (
@@ -26,7 +45,7 @@ export function Controls({ touch }: { touch: boolean }) {
           <span className="text-[#4C372A]">◀ ▶</span> buttons — walk
         </li>
         <li>
-          <span className="text-[#4C372A]">Drag back</span> on the right side — aim &amp; power, release to shoot
+          <span className="text-[#4C372A]">Drag back</span> (away from the target) — aim &amp; power, release to shoot
         </li>
         <li>Walk into the bow and quiver to pick them up</li>
       </ul>
@@ -66,13 +85,17 @@ interface TitleProps {
   onPlay: () => void;
   onLab?: () => void;
   onSettings?: () => void;
+  onSkip?: () => void;
+  onFinal?: () => void;
+  lives?: number;
+  onLives?: (n: number) => void;
   best: Best | null;
   touch: boolean;
 }
 
-export function TitleScreen({ mode, setMode, onPlay, onLab, onSettings, best, touch }: TitleProps) {
+export function TitleScreen({ mode, setMode, onPlay, onLab, onSettings, onSkip, onFinal, lives, onLives, best, touch }: TitleProps) {
   return (
-    <div className="absolute inset-0 flex items-center justify-center md:justify-start md:pl-[6vw]">
+    <div className="absolute inset-0 flex items-center justify-center md:justify-end md:pr-[6vw]">
       <Card>
         <div className="mb-1 text-xs font-extrabold uppercase tracking-[0.3em] text-[#72625D]">A calm winter skill game</div>
         <h1 className="title-text text-5xl font-black leading-[0.95] tracking-tight text-[#D92B27] sm:text-6xl">
@@ -81,7 +104,7 @@ export function TitleScreen({ mode, setMode, onPlay, onLab, onSettings, best, to
           <span className="text-[#4C372A]">Long Shot</span>
         </h1>
         <p className="mt-3 text-sm font-semibold leading-relaxed text-[#72625D] sm:text-base">
-          Walk left, find your bow and arrows, then land <span className="font-black text-[#EA6227]">10 hits in a row</span>. A miss resets the streak — but nobody&apos;s keeping score of that.
+          Walk right, find your bow and arrows, then land <span className="font-black text-[#EA6227]">10 hits in a row</span>. A miss resets the streak — but nobody&apos;s keeping score of that. Then cross the desert and face the Spartan at the gate.
         </p>
 
         <div className="mt-5 grid grid-cols-2 gap-2">
@@ -107,6 +130,17 @@ export function TitleScreen({ mode, setMode, onPlay, onLab, onSettings, best, to
         <button onClick={onPlay} className="play-btn mt-4 w-full rounded-2xl bg-[#EA6227] py-3.5 text-xl font-black text-white shadow-[0_10px_24px_rgba(234,98,39,0.35)] transition-transform hover:scale-[1.02] active:scale-[0.98]">
           ▶ Play
         </button>
+        {onSkip && (
+          <button onClick={onSkip} className="mt-2 w-full rounded-2xl border-2 border-[#F2D9A8] bg-[#FFF7E3] py-2.5 text-sm font-black text-[#8A5A1E] transition-all hover:border-[#EA6227] hover:bg-[#FFF0D2]">
+            ⏭ Skip first challenge <span className="font-semibold text-[#A8803F]">· start in the desert</span>
+          </button>
+        )}
+        {onFinal && (
+          <button onClick={onFinal} className="mt-2 w-full rounded-2xl border-2 border-dashed border-[#CADBF5] bg-white/60 py-2 text-xs font-black text-[#4C6A9A] transition-all hover:border-[#EA6227] hover:bg-white">
+            🛠 DEV · spawn at the last (10th) shot <span className="font-semibold text-[#7F95B8]">· then walk on to the desert</span>
+          </button>
+        )}
+        {onLives && lives !== undefined && <LivesStepper lives={lives} onLives={onLives} className="mt-2" />}
         {best && (
           <div className="mt-2 text-center text-xs font-bold text-[#72625D]">
             Best ({mode}): {best.score.toLocaleString()} pts · {best.arrows} arrows · {fmtTime(best.time)}
@@ -135,12 +169,16 @@ interface PauseProps {
   onRestart: () => void;
   onTitle: () => void;
   onSettings?: () => void;
+  onSkip?: () => void;
+  onFinal?: () => void;
+  lives?: number;
+  onLives?: (n: number) => void;
   muted: boolean;
   onMute: () => void;
   touch: boolean;
 }
 
-export function PauseScreen({ onResume, onRestart, onTitle, onSettings, muted, onMute, touch }: PauseProps) {
+export function PauseScreen({ onResume, onRestart, onTitle, onSettings, onSkip, onFinal, lives, onLives, muted, onMute, touch }: PauseProps) {
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-[#4C372A]/20">
       <Card>
@@ -158,6 +196,17 @@ export function PauseScreen({ onResume, onRestart, onTitle, onSettings, muted, o
           <button onClick={onMute} className="btn-soft">
             {muted ? '🔇 Sound off' : '🔊 Sound on'}
           </button>
+          {onLives && lives !== undefined && <LivesStepper lives={lives} onLives={onLives} className="col-span-2" />}
+          {onFinal && (
+            <button onClick={onFinal} className="btn-soft col-span-2">
+              🛠 DEV · jump to the last (10th) shot
+            </button>
+          )}
+          {onSkip && (
+            <button onClick={onSkip} className="btn-soft col-span-2">
+              ⏭ Skip first challenge → desert
+            </button>
+          )}
           {onSettings && (
             <button onClick={onSettings} className="btn-soft col-span-2">
               ⚙ Settings · character layers
@@ -184,7 +233,7 @@ export function VictoryScreen({ result, best, mode, onReplay, onTitle }: ResultP
   return (
     <div className="absolute inset-0 flex items-center justify-center">
       <Card className="text-center">
-        <div className="text-xs font-extrabold uppercase tracking-[0.3em] text-[#72625D]">10 in a row</div>
+        <div className="text-xs font-extrabold uppercase tracking-[0.3em] text-[#72625D]">Desert gate cleared</div>
         <h2 className="title-text mt-1 text-5xl font-black tracking-tight text-[#D92B27]">You did it!</h2>
         <div className="mt-3 flex justify-center gap-2 text-5xl">
           {[0, 1, 2].map((i) => (

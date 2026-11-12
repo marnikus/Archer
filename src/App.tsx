@@ -11,6 +11,8 @@ export default function App() {
   const gameRef = useRef<Game | null>(null);
   if (!gameRef.current) gameRef.current = new Game(new AudioSys());
   const game = gameRef.current;
+  // dev-only handle for debugging / automated checks
+  if ((import.meta as unknown as { env?: { DEV?: boolean } }).env?.DEV) (window as unknown as { __game: Game }).__game = game;
 
   const [hud, setHud] = useState<HudState>(() => game.snapshot());
   const [mode, setMode] = useState<Mode>('normal');
@@ -23,6 +25,18 @@ export default function App() {
     game.audio.unlock();
     game.audio.uiClick();
     game.start(mode);
+  }, [game, mode]);
+
+  const skip = useCallback(() => {
+    game.audio.unlock();
+    game.audio.uiClick();
+    game.start(mode, { skip: true });
+  }, [game, mode]);
+
+  const finalShot = useCallback(() => {
+    game.audio.unlock();
+    game.audio.uiClick();
+    game.start(mode, { finalShot: true });
   }, [game, mode]);
 
   const toggleMute = useCallback(() => {
@@ -70,7 +84,7 @@ export default function App() {
     }
   }, [game, mode]);
 
-  if (view === 'settings') return <SettingsScreen onExit={() => setView('game')} />;
+  if (view === 'settings') return <SettingsScreen onExit={() => setView('game')} zoom={game.zoomPref} onZoom={(v) => { game.setZoom(v); setTick((t) => t + 1); }} />;
 
   if (view === 'lab')
     return (
@@ -96,9 +110,9 @@ export default function App() {
         </button>
       )}
 
-      {hud.phase !== 'title' && <HUD s={hud} onPause={() => game.togglePause()} onMute={toggleMute} onMove={(d) => game.setTouchMove(d)} onAction={(a) => game.runAction(a)} onEquip={(k) => game.equip(k)} onSettings={openSettings} />}
+      {hud.phase !== 'title' && <HUD s={hud} onPause={() => game.togglePause()} onMute={toggleMute} onMove={(d) => game.setTouchMove(-d)} onAction={(a) => game.runAction(a)} onEquip={(k) => game.equip(k)} onSettings={openSettings} onZoom={(v) => game.setZoom(v)} />}
 
-      {hud.phase === 'title' && <TitleScreen mode={mode} setMode={setMode} onPlay={play} onLab={openLab} onSettings={openSettings} best={hud.best} touch={hud.touch} />}
+      {hud.phase === 'title' && <TitleScreen mode={mode} setMode={setMode} onPlay={play} onLab={openLab} onSettings={openSettings} onSkip={skip} onFinal={finalShot} lives={hud.foeLives} onLives={(n) => game.setFoeLives(n)} best={hud.best} touch={hud.touch} />}
 
       {hud.phase === 'paused' && (
         <PauseScreen
@@ -106,6 +120,10 @@ export default function App() {
           onRestart={() => game.restart()}
           onTitle={() => game.toTitle()}
           onSettings={openSettings}
+          onSkip={hud.canSkip ? () => game.skipToDesert() : undefined}
+          onFinal={hud.canSkip ? () => game.devFinalShot() : undefined}
+          lives={hud.foeLives}
+          onLives={(n) => game.setFoeLives(n)}
           muted={hud.muted}
           onMute={toggleMute}
           touch={hud.touch}

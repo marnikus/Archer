@@ -14,7 +14,7 @@ const ANIM_GROUPS: Array<[string, Array<[string, string]>]> = [
 
 export function AnimPanel({ onAction, onClose }: { onAction: (action: string) => void; onClose: () => void }) {
   return (
-    <div className="pointer-events-auto absolute right-3 top-16 z-20 max-h-[72vh] w-[270px] overflow-y-auto rounded-2xl bg-white/90 p-3 shadow-[0_12px_40px_rgba(76,55,42,0.2)] backdrop-blur-md sm:right-5">
+    <div className="pointer-events-auto absolute right-3 top-[116px] z-20 max-h-[72vh] w-[270px] overflow-y-auto rounded-2xl bg-white/90 p-3 shadow-[0_12px_40px_rgba(76,55,42,0.2)] backdrop-blur-md sm:right-5">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-[11px] font-black uppercase tracking-[0.2em] text-[#D92B27]">Animations</span>
         <button onClick={onClose} className="text-sm font-black text-[#9A8A84]" aria-label="Close">✕</button>

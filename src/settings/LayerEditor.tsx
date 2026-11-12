@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import '../rig/heroDef';
 import '../rig/heroPreview';
+import '../game/spartanFoe';
 import { getCharacter, getPreview, layerStore, listCharacters } from '../rig/layers';
 import { Chip, LayerList } from './LayerList';
 

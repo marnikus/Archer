@@ -1,6 +1,7 @@
 // Layered animator for the archer paper-rig. Produces a RigPose every frame from
 // a small set of intents (base state, equipment, hat, weapon, shooting stage,
 // reactions). Used by both the Animation Test Lab and the game.
+import { gaitFoot } from './legs';
 import {
   G,
   DEG,
@@ -9,6 +10,7 @@ import {
   smooth,
   ik2,
   torsoFrame,
+  applyFrame,
   solveSkeleton,
   defaultPose,
   bowGeom,
@@ -20,6 +22,8 @@ import {
 } from './rig';
 
 const TAU = Math.PI * 2;
+const LOAD_DUR = 0.5; // seconds to fetch + nock an arrow
+const vlerp = (a: Vec, b: Vec, t: number): Vec => ({ x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t) });
 const D = DEG;
 
 export type GaitKey = 'walk-casual' | 'walk' | 'walk-power' | 'walk-brisk' | 'walk-tired' | 'run' | 'sneak' | 'creep';
@@ -227,29 +231,6 @@ class Spring {
   }
 }
 
-function footCycle(ph: number, g: GaitDef, step: number) {
-  ph = ((ph % 1) + 1) % 1;
-  const st = g.stance;
-  if (ph < st) {
-    const u = ph / st;
-    const heel = smooth((u - 0.72) / 0.28);
-    return {
-      x: -step / 2 + step * u,
-      y: G.standAnkleY - heel * 12,
-      rot: -0.3 * (1 - smooth(u / 0.18)) + 0.6 * heel,
-      ground: true,
-    };
-  }
-  const u = (ph - st) / (1 - st);
-  const e = smooth(u);
-  return {
-    x: step / 2 - step * e,
-    y: G.standAnkleY - g.lift * Math.sin(Math.PI * u),
-    rot: 0.6 * (1 - smooth(u / 0.5)) - 0.3 * smooth((u - 0.6) / 0.4),
-    ground: false,
-  };
-}
-
 const angLerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
 export interface AnimStatus {
@@ -312,7 +293,13 @@ export class Animator {
   arrows: LabArrow[] = [];
 
   // shooting
-  shoot = { stage: 'none' as ShootStage, aim: 20 * D, aimGoal: 20 * D, draw: 0, drawGoal: 0, t: 0, raise: 0, raiseDur: 0.5, unsling: false, returnTo: 'carry' as 'carry' | 'aim', directDraw: false };
+  shoot = { stage: 'none' as ShootStage, aim: 20 * D, aimGoal: 20 * D, draw: 0, drawGoal: 0, t: 0, raise: 0, raiseDur: 0.5, unsling: false, returnTo: 'carry' as 'carry' | 'aim', directDraw: false, load: 0 };
+  /** hand-held arrow of the current load animation (copied into the pose) */
+  private loadOut = { on: false, rot: 0, clip: 0, slide: 0 };
+  /** true when an arrow sits on the string (or there is no quiver to load from) */
+  get arrowReady() {
+    return !this.hasQuiver || this.shoot.load >= 1;
+  }
 
   // weapon attack in progress
   attackAnim: { t: number; dur: number; kind: WeaponKind; hit: boolean } | null = null;
@@ -332,7 +319,7 @@ export class Animator {
   eyeWander = 0;
   stepFlag = 0;
   cur = { aUF: 0.1, aFF: 0.25, aUB: -0.1, aFB: 0.1, tilt: 0, pelvisY: G.pelvisY, hipX: 0, headRot: 0, headX: 0, headY: 0, turn: 0, bowRot: -0.25, bsx: 0, sway: 0 };
-  legCur = { f: { x: -26, y: -18, r: 0 }, b: { x: 26, y: -18, r: 0 } };
+  legCur = { f: { x: -26, y: -18, r: 0, toe: 0 }, b: { x: 26, y: -18, r: 0, toe: 0 } };
   beardSp = new Spring(140, 10);
   hatSp = new Spring(220, 12);
   quiverSp = new Spring(120, 8);
@@ -343,6 +330,9 @@ export class Animator {
   prevVx = 0;
   armedBlend = 0;
   handTremor = { x: 0, y: 0 };
+
+  /** Cutscene acting: force parts of the hero's face (brow −1..1, smile 0..1, blink, lookX/lookY). */
+  faceOverride: { brow?: number; smile?: number; blink?: number; lookX?: number; lookY?: number } | null = null;
 
   /** Game override for the nocked-arrow visibility (null = automatic). */
   showArrow: boolean | null = null;
@@ -477,6 +467,7 @@ export class Animator {
       const wasRecover = this.shoot.stage === 'recover';
       this.shoot.stage = 'raise';
       this.shoot.t = 0;
+      this.shoot.load = 0;
       // unsling only when the bow is actually on the back right now
       this.shoot.unsling = this.params.carryMode === 'slung' && (!wasRecover || this.shoot.raise < 0.05) && this.pose.bow.mode !== 'hand';
       this.shoot.raiseDur = this.shoot.unsling ? 1.0 : 0.5;
@@ -516,6 +507,7 @@ export class Animator {
     this.shoot.returnTo = returnTo;
     this.shoot.stage = 'release';
     this.shoot.t = 0;
+    this.shoot.load = 0; // the next arrow has to come out of the quiver again
     this.onEvent?.('release');
     if (!this.external) {
       const sk = this.skel;
@@ -542,6 +534,7 @@ export class Animator {
     this.shoot.draw = 0;
     this.shoot.drawGoal = 0;
     this.shoot.raise = 0;
+    this.shoot.load = 0;
   }
   /** Launch tip for the given aim angle with the string at rest (rig space). */
   launchTip(angle: number) {
@@ -638,7 +631,7 @@ export class Animator {
     const step = g.step * (0.75 + 0.25 * clamp(this.speed / g.speed, 0, 1.4));
     if (this.speed > 0.5) {
       const prev = this.walkPhase;
-      this.walkPhase += (this.speed / (2 * step)) * dt;
+      this.walkPhase += ((this.speed * g.stance) / step) * dt; // cadence that keeps the planted foot still
       // footstep events at contacts (front at 0, back at 0.5)
       const f0 = Math.floor(prev * 2);
       const f1 = Math.floor(this.walkPhase * 2);
@@ -695,8 +688,8 @@ export class Animator {
       aFF: 16 * D,
       aUB: -6 * D,
       aFB: 6 * D,
-      legF: { x: -26, y: G.standAnkleY, r: 0 },
-      legB: { x: 26, y: G.standAnkleY, r: 0 },
+      legF: { x: -26, y: G.standAnkleY, r: 0 } as { x: number; y: number; r: number; toe?: number },
+      legB: { x: 26, y: G.standAnkleY, r: 0 } as { x: number; y: number; r: number; toe?: number },
       bowRot: -14 * D,
       armRate: 14,
       legRate: 40,
@@ -718,16 +711,21 @@ export class Animator {
     if (moving) {
       const p = this.walkPhase;
       const bobU = 0.5 - 0.5 * Math.cos(2 * TAU * (p - g.bobPhase));
-      B.pelvisY = G.pelvisY - g.crouch + g.drop + g.bob * 0.5 - g.bob * bobU * (0.6 + 0.4 * speed01);
+      // stride-aware hip height: the longer the step, the lower the hips, so the leg never over-stretches
+      const legLen = G.thigh + G.shin;
+      const hipAbove = -(G.pelvisY + 2) + G.standAnkleY;
+      const strideCrouch = Math.max(0, hipAbove - Math.sqrt(Math.max(0, (0.94 * legLen) ** 2 - (step / 2 + 4) ** 2)));
+      B.pelvisY = G.pelvisY + g.crouch + strideCrouch * clamp(speed01, 0, 1) + g.drop + g.bob * 0.5 - g.bob * bobU * (0.6 + 0.4 * speed01);
       B.hipX = g.hipSway * Math.sin(TAU * p);
       B.hipRot = g.hipRot * D * Math.sin(TAU * p);
       B.torsoRot = -B.hipRot * (0.7 - 0.4 * prm.torsoTension) * (1 - 0.15 * quiverMod);
       B.sway = -4 * Math.sin(TAU * p) * (1 - 0.3 * prm.torsoTension);
       B.tilt = g.lean * D * (1 - 0.3 * this.armedBlend) + 1.2 * D * Math.sin(2 * TAU * p);
-      const fF = footCycle(p, g, step);
-      const fB = footCycle(p + 0.5, g, step);
-      B.legF = { x: -G.hipOff + fF.x, y: fF.y, r: fF.rot };
-      B.legB = { x: G.hipOff + fB.x, y: fB.y, r: fB.rot };
+      // heel strike → flat → heel-off with the toes bending → swing; cadence keeps the planted foot still
+      const fF = gaitFoot(p, step, g.lift, g.stance);
+      const fB = gaitFoot(p + 0.5, step, g.lift, g.stance);
+      B.legF = { x: -G.hipOff + fF.x, y: G.standAnkleY + fF.y, r: fF.rot, toe: fF.toe };
+      B.legB = { x: G.hipOff + fB.x, y: G.standAnkleY + fB.y, r: fB.rot, toe: fB.toe };
       // arms
       const sw = Math.cos(TAU * (p - 0.06));
       let ampF = g.armF * D;
@@ -927,11 +925,13 @@ export class Animator {
     L.f.x = lerp(L.f.x, B.legF.x, lk);
     L.f.y = lerp(L.f.y, B.legF.y, lk);
     L.f.r = lerp(L.f.r, B.legF.r, lk);
+    L.f.toe = lerp(L.f.toe, B.legF.toe ?? 0, lk);
     L.b.x = lerp(L.b.x, B.legB.x, lk);
     L.b.y = lerp(L.b.y, B.legB.y, lk);
     L.b.r = lerp(L.b.r, B.legB.r, lk);
-    P.frontLeg = { ankle: { x: L.f.x, y: L.f.y }, foot: L.f.r };
-    P.backLeg = { ankle: { x: L.b.x, y: L.b.y }, foot: L.b.r };
+    L.b.toe = lerp(L.b.toe, B.legB.toe ?? 0, lk);
+    P.frontLeg = { ankle: { x: L.f.x, y: L.f.y }, foot: L.f.r, toe: L.f.toe };
+    P.backLeg = { ankle: { x: L.b.x, y: L.b.y }, foot: L.b.r, toe: L.b.toe };
 
     // arms: resolve IK targets against the final torso frame, then smooth angles
     const tf = torsoFrame(P);
@@ -966,6 +966,15 @@ export class Animator {
     P.face.brow = B.brow;
     P.face.smile = B.smile;
     if (B.brow > 0.5) P.face.blink = Math.min(P.face.blink, -0.15);
+    if (this.faceOverride) {
+      const f = this.faceOverride;
+      if (f.brow !== undefined) P.face.brow = f.brow;
+      if (f.smile !== undefined) P.face.smile = f.smile;
+      if (f.lookX !== undefined) P.face.lookX = f.lookX;
+      if (f.lookY !== undefined) P.face.lookY = f.lookY;
+      if (f.blink !== undefined) P.face.blink = f.blink;
+      else if ((f.brow ?? 0) > 0.5) P.face.blink = Math.min(P.face.blink, -0.15);
+    }
 
     // ---- equipment visuals
     P.quiver.on = this.hasQuiver;
@@ -1187,8 +1196,10 @@ export class Animator {
   private applyShooting(dt: number, B: BodyTargets, t: number): number {
     const S = this.shoot;
     const prm = this.params;
+    this.loadOut.on = false;
     if (S.stage !== 'none' && (this.weapon !== 'bow' || !this.hasBow)) this.shootCancel();
     if (S.stage === 'none') {
+      S.load = 0;
       S.raise = lerp(S.raise, 0, 1 - Math.exp(-8 * dt));
       return 0;
     }
@@ -1213,14 +1224,20 @@ export class Animator {
         return 0;
       }
     } else S.raise = 1;
+    // loading: the back hand fetches an arrow from the quiver and nocks it; the string can't be drawn before that
+    const stageLoads = (S.stage === 'aim' || S.stage === 'draw' || S.stage === 'hold') && S.raise > 0.98;
+    const wantsArrow = this.hasQuiver && (this.showArrow ?? true);
+    if (stageLoads && wantsArrow && S.load < 1) S.load = Math.min(1, S.load + dt / LOAD_DUR);
+    const loading = stageLoads && wantsArrow && S.load < 1;
+    const drawGoal = loading ? 0 : S.drawGoal;
     // draw progress
     if (S.stage === 'draw') {
-      if (S.directDraw) S.draw = lerp(S.draw, S.drawGoal, 1 - Math.exp(-18 * dt));
-      else S.draw = clamp(S.draw + Math.sign(S.drawGoal - S.draw) * 1.1 * dt, 0, 1);
+      if (S.directDraw) S.draw = lerp(S.draw, drawGoal, 1 - Math.exp(-18 * dt));
+      else S.draw = clamp(S.draw + Math.sign(drawGoal - S.draw) * 1.1 * dt, 0, 1);
       if (!S.directDraw && Math.abs(S.draw - S.drawGoal) < 0.01 && S.drawGoal > 0.02) S.stage = 'hold';
       if (S.drawGoal < 0.01 && S.draw < 0.01) S.stage = 'aim';
     } else if (S.stage === 'hold') {
-      S.draw = lerp(S.draw, S.drawGoal, 1 - Math.exp(-8 * dt));
+      S.draw = lerp(S.draw, drawGoal, 1 - Math.exp(-8 * dt));
     } else if (S.stage === 'release') {
       S.draw = lerp(S.draw, 0, 1 - Math.exp(-45 * dt));
       if (S.t > 0.34) {
@@ -1302,6 +1319,10 @@ export class Animator {
     // --- back (draw) arm
     const restUB = -10 * D;
     const restFB = restUB + 24 * D;
+    if (loading) {
+      this.applyLoad(B, S.load, aim, restUB, restFB);
+      return ru;
+    }
     if (S.stage === 'aim' || S.stage === 'raise') {
       B.aUB = angLerp(B.aUB, restUB, ru);
       B.aFB = angLerp(B.aFB, restFB, ru);
@@ -1341,6 +1362,64 @@ export class Animator {
     return ru;
   }
 
+  /**
+   * Back hand fetches an arrow: 0 to .32 reach over the shoulder to the quiver, .32 to .44 grab + pull it out,
+   * .44 to 1 carry it forward while it swings round to point at the bow, then slide it onto the string.
+   */
+  private applyLoad(B: BodyTargets, u: number, aim: number, restUB: number, restFB: number) {
+    const tmp = defaultPose();
+    tmp.tilt = B.tilt;
+    tmp.pelvisY = B.pelvisY;
+    tmp.hipX = B.hipX;
+    tmp.torsoRot = B.torsoRot;
+    tmp.shoulderSway = B.sway;
+    tmp.backShoulderX = B.bsx;
+    const tf = torsoFrame(tmp);
+    const sh = tf.shoulderB;
+    const d1 = { x: -Math.sin(restUB), y: Math.cos(restUB) };
+    const d2 = { x: -Math.sin(restFB), y: Math.cos(restFB) };
+    const rest = { x: sh.x + d1.x * G.upperArm + d2.x * G.foreArm, y: sh.y + d1.y * G.upperArm + d2.y * G.foreArm };
+    // quiver frame
+    const phi = G.quiver.rot + tf.torso.a;
+    const qAt = applyFrame(tf.torso, { x: G.quiver.ax, y: G.quiver.ay });
+    const up = { x: Math.sin(phi), y: -Math.cos(phi) }; // quiver axis, pointing out of its mouth
+    const along = (d: number): Vec => ({ x: qAt.x + up.x * d * G.quiver.scale, y: qAt.y + up.y * d * G.quiver.scale });
+    const grab = along(50);
+    const pulled = along(88);
+    // where the bow's nock is, and how far the arm can carry the arrow towards it
+    const nock = this.nockFor(B, aim, 0);
+    const toN = { x: nock.x - sh.x, y: nock.y - sh.y };
+    const dN = Math.hypot(toN.x, toN.y) || 1;
+    const reach = Math.min(dN, 0.9 * (G.upperArm + G.foreArm));
+    const far = { x: sh.x + (toN.x / dN) * reach, y: sh.y + (toN.y / dN) * reach };
+    const thetaQ = Math.PI / 2 + phi; // arrow head pointing back into the quiver
+    const thetaF = Math.PI + aim; // arrow head pointing along the bow
+    let hand: Vec;
+    let rot = thetaQ;
+    let clip = 1;
+    let slide = 0;
+    let on = true;
+    if (u < 0.32) {
+      const k = smooth(u / 0.32);
+      hand = vlerp(rest, grab, k);
+      on = false;
+    } else if (u < 0.44) {
+      const k = smooth((u - 0.32) / 0.12);
+      hand = vlerp(grab, pulled, k);
+    } else {
+      const k = smooth((u - 0.44) / 0.56);
+      hand = vlerp(pulled, far, k);
+      hand.y -= 34 * Math.sin(Math.PI * k);
+      rot = thetaQ + (thetaF - thetaQ) * smooth(clamp(k / 0.85, 0, 1));
+      clip = 1 - smooth(clamp(k / 0.35, 0, 1));
+      slide = clamp((k - 0.72) / 0.28, 0, 1);
+    }
+    B.backIK = { x: hand.x, y: hand.y };
+    B.backBend = 1;
+    B.armRate = 26;
+    this.loadOut = { on, rot, clip, slide };
+  }
+
   /** Nock position for the target front arm pose. */
   private nockFor(B: BodyTargets, aim: number, draw: number): Vec {
     const tmp = defaultPose();
@@ -1359,6 +1438,7 @@ export class Animator {
   private applyBowVisual(P: RigPose, bowRot: number, shootW: number) {
     const S = this.shoot;
     const prm = this.params;
+    P.loadArrow = { ...this.loadOut };
     this.carried = this.carried.kind === 'none' ? this.carried : this.carried;
     if (!this.hasBow) {
       P.bow.mode = 'none';
@@ -1390,7 +1470,7 @@ export class Animator {
     P.bow.rot = bowRot;
     P.bow.draw = S.draw;
     P.bow.recoil = S.stage === 'release' ? Math.exp(-S.t * 8) * prm.releaseStrength : 0;
-    P.bow.arrow = this.showArrow ?? ((S.stage === 'aim' || S.stage === 'draw' || S.stage === 'hold') && this.hasQuiver && S.raise > 0.98);
+    P.bow.arrow = (this.showArrow ?? ((S.stage === 'aim' || S.stage === 'draw' || S.stage === 'hold') && this.hasQuiver && S.raise > 0.98)) && this.arrowReady && !this.loadOut.on;
     // slung blend during raise / recover
     if (prm.carryMode === 'slung') {
       if (S.stage === 'raise') {
@@ -2005,8 +2085,8 @@ type BodyTargets = {
   aFF: number;
   aUB: number;
   aFB: number;
-  legF: { x: number; y: number; r: number };
-  legB: { x: number; y: number; r: number };
+  legF: { x: number; y: number; r: number; toe?: number };
+  legB: { x: number; y: number; r: number; toe?: number };
   bowRot: number;
   armRate: number;
   legRate: number;

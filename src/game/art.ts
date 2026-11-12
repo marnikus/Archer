@@ -650,12 +650,16 @@ export function drawSignpost(ctx: CanvasRenderingContext2D, x: number, groundY: 
   ctx.font = 'bold 28px Nunito, "Segoe UI", system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(text, x + 12, groundY - 156);
+  ctx.save();
+  ctx.translate(x + 12, groundY - 156);
+  ctx.scale(-1, 1); // the world is drawn mirrored; keep text readable
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
 }
 
 export function drawCloud(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, alpha: number) {
   ctx.save();
-  ctx.globalAlpha = alpha;
+  ctx.globalAlpha *= alpha;
   ctx.fillStyle = '#FFFFFF';
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -716,7 +720,11 @@ export function drawFence(ctx: CanvasRenderingContext2D, x: number, groundY: num
   ctx.font = 'bold 20px Nunito, "Segoe UI", system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText('LINE', x, groundY - 127);
+  ctx.save();
+  ctx.translate(x, groundY - 127);
+  ctx.scale(-1, 1);
+  ctx.fillText('LINE', 0, 0);
+  ctx.restore();
   ctx.fillStyle = PAL.brown;
   roundRectPath(ctx, x - 5, groundY - 110, 10, 110, 4);
   ctx.fill();

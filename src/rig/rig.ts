@@ -4,6 +4,7 @@
 // the caller flips the context to face right.
 import { drawArrowArt, PAL } from '../game/art';
 import { drawLayered } from './layers';
+import { solveLeg } from './legs';
 import { HERO, CTX } from './heroDef';
 
 export type Vec = { x: number; y: number };
@@ -39,10 +40,10 @@ export const COL = {
 
 /** Geometry constants (rig units; 1 unit = 1 game world unit). */
 export const G = {
-  pelvisY: -108,
-  hipOff: 22,
-  thigh: 48,
-  shin: 44,
+  pelvisY: -122,
+  hipOff: 30,
+  thigh: 56,
+  shin: 52,
   thighW: 46,
   shinW: 42,
   boot: { toe: 38, heel: 24, top: 14, bot: 18, r: 13 },
@@ -68,7 +69,7 @@ export const G = {
   ],
   tipLen: 54,
   hat: { band: { x0: -130, x1: 110, y0: -172, y1: -122, r: 25 }, crown: { x0: -114, x1: 94, y0: -228, y1: -146, r: 48 } },
-  quiver: { ax: 94, ay: -150, w: 64, h: 128, rot: 22 * DEG },
+  quiver: { ax: 118, ay: -122, w: 66, h: 98, rot: 34 * DEG, scale: 1.45 },
   bow: { half: 140, bulge: 44, stringX: 40, drawMax: 150, wrap: 22, width: 24 },
   arrowLen: 230,
   slung: { cx: -38, cy: -238, rot: 50 * DEG },
@@ -81,6 +82,7 @@ export type ArmPose = { kind: 'fk'; shoulder: number; elbow: number } | { kind: 
 export interface LegPose {
   ankle: Vec; // rig space
   foot: number; // rotation about the ankle (+ = toes down)
+  toe?: number; // toe bend at the ball of the foot (+ = toes down)
 }
 export type WeaponKind = 'unarmed' | 'bow' | 'crossbow' | 'spear' | 'sword' | 'staff' | 'axe';
 export type HatWhere = 'head' | 'hand' | 'world' | 'none';
@@ -118,6 +120,8 @@ export interface RigPose {
   weapon: { kind: WeaponKind; rot: number | null; backHand: boolean };
   sit: number;
   carriedItem: { kind: 'none' | 'quiver' | 'bow'; rot: number; t: number };
+  /** an arrow pulled from the quiver and nocked by the back hand: rot = direction of the arrow head, slide = 0..1 tail moves from the hand to the nock */
+  loadArrow: { on: boolean; rot: number; clip: number; slide: number };
 }
 
 export function defaultPose(): RigPose {
@@ -147,6 +151,7 @@ export function defaultPose(): RigPose {
     weapon: { kind: 'unarmed', rot: null, backHand: false },
     sit: 0,
     carriedItem: { kind: 'none', rot: 0, t: 0 },
+    loadArrow: { on: false, rot: 0, clip: 0, slide: 0 },
   };
 }
 
@@ -258,12 +263,13 @@ export function solveSkeleton(p: RigPose): Skeleton {
   // legs
   const hipF = { x: pelvis.x - G.hipOff * Math.cos(p.hipRot), y: pelvis.y + 2 - G.hipOff * Math.sin(p.hipRot) };
   const hipB = { x: pelvis.x + G.hipOff * Math.cos(p.hipRot), y: pelvis.y + 2 + G.hipOff * Math.sin(p.hipRot) };
-  const lf = ik2(hipF, p.frontLeg.ankle, G.thigh, G.shin, 1);
-  const lb = ik2(hipB, p.backLeg.ankle, G.thigh, G.shin, 1);
-  const kneeF = { x: hipF.x + dir(lf.a1).x * G.thigh, y: hipF.y + dir(lf.a1).y * G.thigh };
-  const kneeB = { x: hipB.x + dir(lb.a1).x * G.thigh, y: hipB.y + dir(lb.a1).y * G.thigh };
-  const ankleF = { x: kneeF.x + dir(lf.a2).x * G.shin, y: kneeF.y + dir(lf.a2).y * G.shin };
-  const ankleB = { x: kneeB.x + dir(lb.a2).x * G.shin, y: kneeB.y + dir(lb.a2).y * G.shin };
+  // robust leg solve: knee always forward, soft limit near full extension (no knee snapping in jumps / long strides)
+  const LF = solveLeg(hipF, p.frontLeg.ankle, G.thigh, G.shin);
+  const LB = solveLeg(hipB, p.backLeg.ankle, G.thigh, G.shin);
+  const kneeF = LF.knee;
+  const kneeB = LB.knee;
+  const ankleF = LF.ankle;
+  const ankleB = LB.ankle;
   // bow anchors (in hand)
   let bowGrip: Vec | null = null;
   let nock: Vec | null = null;
@@ -680,15 +686,11 @@ export interface DrawOpts {
 // each sprite is mapped onto a bone with a rotate+scale about its own axis.
 // ---------------------------------------------------------------------------
 type Part = [string, string];
-const LEG_THIGH: Part[] = [['M128.777 8.94163e-05L223.947 11.9643L189.672 132.364L91.6719 118.364L128.777 8.94163e-05Z', '#59331D']];
-const LEG_SHIN: Part[] = [['M82.6719 150.364L186.672 170.364C181.672 200.364 179.672 232.364 178.672 266.364C163.672 272.364 145.672 272.364 126.672 270.364L74.6719 190.364L82.6719 150.364Z', '#4B2814']];
 const LEG_BOOT: Part[] = [
   ['M75.6719 185.364C39.6719 177.364 6.67188 198.364 0.671875 238.364C31.6719 257.364 81.6719 267.364 129.672 270.364C135.672 242.364 140.672 222.364 135.672 210.364C130.672 198.364 101.672 190.364 75.6719 185.364Z', '#5C351F'],
   ['M126.672 267.364C146.672 269.364 165.672 268.364 178.672 262.364C179.672 284.364 170.672 301.364 148.672 299.364L121.672 297.364L126.672 267.364Z', '#76472A'],
   ['M0.668045 236.364C31.668 255.364 81.668 264.364 128.668 267.364L123.668 297.364L41.668 290.364C10.668 287.364 -3.33196 266.364 0.668045 236.364Z', '#825132'],
 ];
-const LEG_WRAP: Part[] = [['M103.666 107.364C131.666 115.364 161.666 121.364 189.666 123.364C200.666 124.364 205.666 135.364 203.666 150.364C200.666 166.364 192.666 177.364 177.666 175.364C144.666 171.364 113.666 164.364 85.6665 155.364C74.6665 151.364 72.6665 138.364 76.6665 124.364C80.6665 110.364 91.6665 104.364 103.666 107.364Z', '#BF9B73']];
-
 const STRAP_PARTS: Part[] = [
   ['M17.2073 234.619C36.6185 228.552 185.763 155.743 274.353 72.4308C281.36 64.3825 304.555 92.5236 298.293 100.517C250.139 142.367 195.721 181.607 145.122 212.222C99.5952 239.768 37.913 263.943 25.1603 269.53C12.4077 275.116 11.7815 264.937 10.9288 258.149C9.63943 247.883 5.52261 238.271 17.2073 234.619Z', '#7C4128'],
   ['M184.95 141.952C215.892 120.351 245.386 97.0469 274.352 72.4306L277.64 74.9184C248.674 99.5347 219.18 122.839 186.926 144.968L203.654 169.486L200.638 171.462L184.95 141.952Z', '#5D2D18'],
@@ -717,52 +719,76 @@ function shadeHex(hex: string, k: number) {
   return `rgb(${f(n >> 16)},${f((n >> 8) & 255)},${f(n & 255)})`;
 }
 
-/** Draw svg-space parts so the svg axis A→B lies along local +y from y0 to y1 (width scaled by sx). */
-function drawAlongAxis(ctx: CanvasRenderingContext2D, parts: Part[], A: Vec, B: Vec, y0: number, y1: number, sx: number, shade: number) {
-  const vx = B.x - A.x;
-  const vy = B.y - A.y;
-  const L = Math.hypot(vx, vy);
-  ctx.save();
-  ctx.translate(0, y0);
-  ctx.scale(sx, (y1 - y0) / L);
-  ctx.rotate(Math.atan2(vx, vy));
-  ctx.translate(-A.x, -A.y);
-  fillParts(ctx, parts, shade);
-  ctx.restore();
+const LEG_THIGH = '#59331D';
+const LEG_SHIN = '#4B2814';
+const LEG_WRAP = '#BF9B73';
+const LEG_WRAP_EDGE = '#A98657';
+
+/** a limb that narrows from radius ra at a to rb at b, with round ends (no gaps however it bends) */
+function taperLimb(ctx: CanvasRenderingContext2D, a: Vec, b: Vec, ra: number, rb: number) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const L = Math.hypot(dx, dy) || 1;
+  const nx = -dy / L;
+  const ny = dx / L;
+  ctx.beginPath();
+  ctx.moveTo(a.x + nx * ra, a.y + ny * ra);
+  ctx.lineTo(b.x + nx * rb, b.y + ny * rb);
+  ctx.lineTo(b.x - nx * rb, b.y - ny * rb);
+  ctx.lineTo(a.x - nx * ra, a.y - ny * ra);
+  ctx.closePath();
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(a.x, a.y, ra, 0, Math.PI * 2);
+  ctx.arc(b.x, b.y, rb, 0, Math.PI * 2);
+  ctx.fill();
 }
 
-/** Thigh, shin and knee wrap (the boot is its own layer). */
+/**
+ * Thigh + shin as continuous limbs in the artwork's colours. A joint disc closes the knee at any bend angle and the tan
+ * wrap is a band locked to the top of the shin (the boot is its own layer).
+ */
 function drawLegBones(ctx: CanvasRenderingContext2D, hip: Vec, knee: Vec, ankle: Vec, shade: number) {
-  const a1 = angOf(knee.x - hip.x, knee.y - hip.y);
   const a2 = angOf(ankle.x - knee.x, ankle.y - knee.y);
-  // thigh
-  ctx.save();
-  ctx.translate(hip.x, hip.y);
-  ctx.rotate(a1);
-  drawAlongAxis(ctx, LEG_THIGH, { x: 176, y: 6 }, { x: 141, y: 125 }, -4, G.thigh + 16, 0.5, shade);
-  ctx.restore();
-  // shin
+  ctx.fillStyle = shade === 1 ? LEG_THIGH : shadeHex(LEG_THIGH, shade);
+  taperLimb(ctx, hip, knee, 20, 18.5);
+  ctx.beginPath();
+  ctx.arc(knee.x, knee.y, 18.5, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = shade === 1 ? LEG_SHIN : shadeHex(LEG_SHIN, shade);
+  taperLimb(ctx, knee, ankle, 18, 15.5);
+  // leg wrap just above the boot, locked to the shin angle
+  const len = Math.hypot(ankle.x - knee.x, ankle.y - knee.y);
   ctx.save();
   ctx.translate(knee.x, knee.y);
   ctx.rotate(a2);
-  drawAlongAxis(ctx, LEG_SHIN, { x: 134, y: 160 }, { x: 153, y: 268 }, -12, G.shin + 8, 0.5, shade);
-  ctx.restore();
-  // knee wrap, centred on the joint, following the bend
-  ctx.save();
-  ctx.translate(knee.x, knee.y);
-  ctx.rotate((a1 + a2) / 2 - 0.184);
-  ctx.scale(0.5, 0.5);
-  ctx.translate(-140, -141);
-  fillParts(ctx, LEG_WRAP, shade);
+  const y0 = Math.max(4, len - 36);
+  ctx.fillStyle = shade === 1 ? LEG_WRAP_EDGE : shadeHex(LEG_WRAP_EDGE, shade);
+  roundedBand(ctx, -19, y0 + 2, 38, 19, 8);
+  ctx.fillStyle = shade === 1 ? LEG_WRAP : shadeHex(LEG_WRAP, shade);
+  roundedBand(ctx, -19, y0, 38, 16.5, 8);
   ctx.restore();
 }
 
-function drawBoot(ctx: CanvasRenderingContext2D, ankle: Vec, footRot: number, shade: number) {
+function roundedBand(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fill();
+}
+
+/** The boot artwork, drawn whole (no splitting, so no cracks). It rolls at the ankle; toe bend adds a little extra roll. */
+function drawBoot(ctx: CanvasRenderingContext2D, ankle: Vec, footRot: number, shade: number, toe = 0) {
   ctx.save();
   ctx.translate(ankle.x, ankle.y);
-  ctx.rotate(-footRot);
-  ctx.scale(0.52, 0.52);
-  ctx.translate(-152, -266);
+  ctx.rotate(-(footRot + toe * 0.28));
+  const k = 0.35;
+  ctx.scale(k, k);
+  ctx.translate(-152, -(299 - 17.5 / k)); // the sole sits exactly on the ground line when standing
   fillParts(ctx, LEG_BOOT, shade);
   ctx.restore();
 }
@@ -841,13 +867,14 @@ export function drawRig(ctx: CanvasRenderingContext2D, p: RigPose, s: Skeleton, 
       ctx.save();
       ctx.translate(at.x, at.y + p.quiver.bounce);
       ctx.rotate(G.quiver.rot + p.quiver.swing + s.torso.a);
+      ctx.scale(G.quiver.scale, G.quiver.scale);
       drawQuiverArt(ctx, opts.arrowsInQuiver ?? 3);
       ctx.restore();
     },
     legBack: () => drawLegBones(ctx, s.hipB, s.kneeB, s.ankleB, 0.82),
-    bootBack: () => drawBoot(ctx, s.ankleB, p.backLeg.foot, 0.82),
+    bootBack: () => drawBoot(ctx, s.ankleB, p.backLeg.foot, 0.82, p.backLeg.toe ?? 0),
     legFront: () => drawLegBones(ctx, s.hipF, s.kneeF, s.ankleF, 1),
-    bootFront: () => drawBoot(ctx, s.ankleF, p.frontLeg.foot, 1),
+    bootFront: () => drawBoot(ctx, s.ankleF, p.frontLeg.foot, 1, p.frontLeg.toe ?? 0),
 
     armFront: () => {
       drawArmSeg(ctx, s.shoulderF, s.elbowF);
@@ -1025,6 +1052,27 @@ export function drawRig(ctx: CanvasRenderingContext2D, p: RigPose, s: Skeleton, 
       drawArmSeg(ctx, s.elbowB, s.handB);
     },
     weaponBack: () => {
+      if (p.loadArrow.on) {
+        const La = p.loadArrow;
+        const tail = La.slide > 0 && s.nock ? vlerp(s.handB, s.nock, smooth(La.slide)) : s.handB;
+        ctx.save();
+        if (La.clip > 0.01 && p.quiver.on) {
+          // still inside the quiver: only the part above its mouth shows
+          const m = ctx.getTransform();
+          const at = applyFrame(s.torso, { x: G.quiver.ax, y: G.quiver.ay });
+          ctx.translate(at.x, at.y + p.quiver.bounce);
+          ctx.rotate(G.quiver.rot + p.quiver.swing + s.torso.a);
+          ctx.beginPath();
+          ctx.rect(-400, -800, 800, 800 + 6 * G.quiver.scale);
+          ctx.clip();
+          ctx.setTransform(m);
+        }
+        ctx.translate(tail.x, tail.y);
+        ctx.rotate(La.rot);
+        ctx.translate(G.arrowLen, 0);
+        drawArrowArt(ctx, G.arrowLen);
+        ctx.restore();
+      }
       if (p.weapon.backHand && p.weapon.kind !== 'unarmed' && p.weapon.kind !== 'bow') {
         ctx.save();
         ctx.translate(s.handB.x, s.handB.y);

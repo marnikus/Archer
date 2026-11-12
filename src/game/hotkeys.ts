@@ -53,6 +53,7 @@ export const HOTKEYS: Hotkey[] = [
   { code: '', key: '↑ ↓  W S', label: 'Aim angle', group: 'Game', action: 'aim' },
   { code: 'KeyP', key: 'P / Esc', label: 'Pause', group: 'Game', action: 'pause' },
   { code: 'KeyM', key: 'M', label: 'Mute', group: 'Game', action: 'mute' },
+  { code: '', key: '− / +', label: 'Camera zoom out / in', group: 'Game', action: 'zoom' },
   { code: 'F1', key: 'F1', label: 'This help', group: 'Game', action: 'help' },
 ];
 

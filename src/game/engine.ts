@@ -28,6 +28,8 @@ import {
 import { AudioSys } from './audio';
 import { Animator, ATTACKS, isHide, isSit, type BaseState, type GaitKey, type Reaction } from '../rig/animator';
 import { HOTKEYS } from './hotkeys';
+import { SpartanFoe, FOE } from './spartanFoe';
+import { DesertScene, DESERT, uToX, xToU, FOE_U, TOTAL_U, END_U, type SceneEnv } from './desertScene';
 import { drawRig, drawHatLoose, type WeaponKind } from '../rig/rig';
 
 export type Mode = 'normal' | 'hard';
@@ -35,6 +37,32 @@ export type Phase = 'title' | 'playing' | 'paused' | 'victory' | 'gameover';
 type Pose = 'idle' | 'walk' | 'aim' | 'draw' | 'release' | 'celebrate' | 'sad' | 'shake' | 'victory';
 
 const W = CFG.world.width;
+const LINES = {
+  foe: {
+    notice: ['Hm? A visitor!', 'Oh! Lunch arrived!'],
+    attack: ['THIS... IS... MODERATELY SPARTA!', 'Come here, snack!', 'Hold still, crunchy!', 'AAARGH! (I practiced this!)'],
+    sprint: ['Coming through!', 'Incoming Spartan!', 'Run, little beard!'],
+    block: ['Tickles!', 'Is that all?', 'My shield says thanks.', 'Pointy stick? Cute.', 'Nope!'],
+    hurt: ['OW! My pretty face!', 'Not the face!', 'Rude!', 'That one counted?!'],
+    wound: ["Okay. NOW I'm angry-er!", 'You made me sweat!', 'Fine. No more Mr. Nice Spartan.'],
+    die: ['Tell my shield... I loved it...', 'Worth it... for the cape...', 'I regret nothing. Except this.'],
+    taunt: ['Gotcha!', 'Next!', 'Beard? Hah!'],
+  },
+  hero: {
+    ouch: ['My beard!', 'Ow ow ow!', 'I need a bigger hat!'],
+    hit: ['Gotcha!', 'Take that, shield-boy!', 'Beard power!'],
+    block: ['Rude.', 'He blocked it?!', 'Hmph.'],
+    win: ['Told you. Mostly beard.', 'Nothing personal.', "Where's my snack now?"],
+  },
+} as const;
+const CUT_FOE = 'A tiny archer?! Finally — a snack!';
+const CUT_HERO = "Snack? I'm mostly beard. You'll regret it.";
+const pick = <T,>(a: readonly T[]) => a[Math.floor(Math.random() * a.length)];
+
+const smoothstep = (x: number) => {
+  const t = Math.max(0, Math.min(1, x));
+  return t * t * (3 - 2 * t);
+};
 const G = CFG.world.groundY;
 
 export interface Banner {
@@ -96,6 +124,14 @@ export interface HudState {
   weapon: WeaponKind;
   weaponReady: boolean;
   stance: string;
+  stage: 'snow' | 'desert';
+  /** Spartan state while he is on screen (desert), else null */
+  foe: { hp: number; max: number; open: boolean; anger: number; angerMax: number; alive: boolean; state: string } | null;
+  canSkip: boolean;
+  cut: boolean;
+  foeLives: number;
+  worldMin: number;
+  zoom: number;
 }
 
 interface Arrow {
@@ -174,6 +210,9 @@ interface Archer {
   hintUnarmedT: number;
   pickupT: number;
   attackT: number;
+  downT: number;
+  introWalkT: number;
+  kb: number;
 }
 
 interface TargetState {
@@ -298,7 +337,7 @@ export class Game {
     }
     this.resetWorld();
     this.best = this.loadBest();
-    this.cam.x = CFG.archer.startX + 60;
+    this.cam.x = CFG.archer.startX - 230;
     this.cam.y = 400;
     this.cam.zoom = 1;
   }
@@ -377,6 +416,9 @@ export class Game {
       hintUnarmedT: 0,
       pickupT: 0,
       attackT: 0,
+      downT: 0,
+      introWalkT: 0,
+      kb: 0,
     };
     this.anim = this.makeAnim();
     this.lastAnimPose = 'idle';
@@ -390,6 +432,23 @@ export class Game {
     this.autoWalk = null;
     this.runHeld = false;
     this.hintMsg = '';
+    this.stage = 'snow';
+    this.foe = null;
+    this.trans = null;
+    this.finale = null;
+    this.fade = 0;
+    this.obst = 1;
+    this.skipped = false;
+    this.shakeT = 0;
+    this.foeBlocks = 0;
+    this.bubbles = [];
+    this.barkCool = { hero: 0, foe: 0 };
+    this.metDone = false;
+    this.cut = null;
+    this.minX = CFG.archer.minX;
+    this.maxX = CFG.archer.maxX;
+    this.worldW = W;
+    this.wallX = 140;
     this.pickups = [
       { kind: 'bow', x: CFG.bow.x, collected: false, fly: 0, fx: 0, fy: 0, phase: 0 },
       { kind: 'quiver', x: CFG.quiver.x, collected: false, fly: 0, fx: 0, fy: 0, phase: 1.7 },
@@ -445,13 +504,60 @@ export class Game {
     this.onPhase?.(p);
   }
 
-  start(mode: Mode) {
+  /** DEV: put the hero at the shooting line with 9/10 hits, so the next hit finishes the first challenge. */
+  private spawnFinalShot() {
+    const a = this.archer;
+    a.hasBow = true;
+    a.hasQuiver = true;
+    this.weapon = 'bow';
+    this.weaponReady = false;
+    a.x = 2300;
+    a.facing = -1;
+    a.pose = 'aim';
+    a.firedOnce = true;
+    for (const p of this.pickups) {
+      p.collected = true;
+      p.fly = 1;
+    }
+    this.startArrowVisible = false;
+    this.streak = 9;
+    this.arrowsUsed = 9;
+    this.score = 4200;
+    this.pipKey++;
+    this.setupStage(9);
+    this.audio.setLayers(3);
+    this.cam.x = a.x - 150;
+    this.showBanner('FINAL SHOT!', 'final', 'DEV start · one hit finishes the first challenge');
+  }
+
+  /** DEV: same, from the pause menu. */
+  devFinalShot() {
+    if (this.stage !== 'snow' || this.phase === 'title' || this.phase === 'victory' || this.phase === 'gameover') return;
+    if (this.phase === 'paused') this.togglePause();
+    if (this.archer.charging) this.cancelCharge();
+    this.audio.creakStop();
+    this.arrows = [];
+    this.spawnFinalShot();
+  }
+
+  start(mode: Mode, opts?: { skip?: boolean; finalShot?: boolean }) {
     this.mode = mode;
     this.best = this.loadBest();
     this.resetWorld();
     this.audio.unlock();
     this.audio.musicStart();
     this.setPhase('playing');
+    if (opts?.skip) this.enterDesert(true);
+    else if (opts?.finalShot) this.spawnFinalShot();
+  }
+
+  /** Jump straight to the desert (skip the first challenge). Works from the pause menu too. */
+  skipToDesert() {
+    if (this.stage !== 'snow' || this.phase === 'title' || this.phase === 'victory' || this.phase === 'gameover') return;
+    if (this.phase === 'paused') this.togglePause();
+    if (this.archer.charging) this.cancelCharge();
+    this.audio.creakStop();
+    this.enterDesert(true);
   }
 
   restart() {
@@ -461,7 +567,7 @@ export class Game {
   toTitle() {
     this.resetWorld();
     this.audio.musicStop();
-    this.cam.x = CFG.archer.startX + 60;
+    this.cam.x = CFG.archer.startX - 230;
     this.cam.y = 400;
     this.cam.zoom = 1;
     this.setPhase('title');
@@ -497,9 +603,12 @@ export class Game {
     return this.mode === 'hard' ? this.arrowsLeft > 0 : true;
   }
 
+  /** fire was pressed while the next arrow was still being fetched */
+  private fireQueued = false;
+
   pressFire() {
     this.spaceDown = true;
-    if (this.phase !== 'playing') return;
+    if (this.phase !== 'playing' || this.inputLocked()) return;
     const a = this.archer;
     if (a.victory || a.charging) return;
     if (!this.armed()) {
@@ -517,6 +626,10 @@ export class Game {
       return;
     }
     if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight() || a.attackT > 0 || this.anim.seq) return;
+    if (!this.anim.arrowReady) {
+      this.fireQueued = true; // raise the bow and fetch an arrow from the quiver; the draw starts as soon as it is nocked
+      return;
+    }
     this.beginCharge();
   }
 
@@ -549,6 +662,7 @@ export class Game {
 
   releaseFire() {
     this.spaceDown = false;
+    this.fireQueued = false;
     if (this.phase !== 'playing') return;
     const a = this.archer;
     if (a.charging && !this.touchAim.active) this.fire(a.power / 100);
@@ -556,7 +670,7 @@ export class Game {
 
   touchAimStart(px: number, py: number) {
     this.isTouch = true;
-    if (this.phase !== 'playing') return;
+    if (this.phase !== 'playing' || this.inputLocked()) return;
     const a = this.archer;
     if (a.victory || a.charging) return;
     if (!this.armed()) {
@@ -564,14 +678,14 @@ export class Game {
       this.spaceDown = false;
       return;
     }
-    if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight()) return;
+    if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight() || !this.anim.arrowReady) return;
     this.touchAim = { active: true, sx: px, sy: py };
     this.beginCharge();
   }
 
   touchAimMove(px: number, py: number) {
     if (!this.touchAim.active || !this.archer.charging) return;
-    const dx = this.touchAim.sx - px;
+    const dx = px - this.touchAim.sx;
     const dy = this.touchAim.sy - py;
     const len = Math.hypot(dx, dy);
     const ang = (Math.atan2(-dy, Math.max(0.001, -dx)) * 180) / Math.PI;
@@ -754,6 +868,7 @@ export class Game {
       this.ring(t.x, t.y, '#FFFFFF', kind === 'unarmed' ? 40 : 70);
       if (kind === 'crossbow') this.audio.twang(0.8);
       else this.audio.pop();
+      this.heroBlowVsFoe(kind);
       return;
     }
     if (what === 'detach' && kind === 'bow') {
@@ -893,6 +1008,11 @@ export class Game {
 
   private onMiss(arrow: Arrow, x: number, y: number) {
     const a = this.archer;
+    if (this.stage === 'desert') {
+      this.addFloat(x, y - 60, 'MISS', PAL.grey, 30);
+      this.audio.womp();
+      return;
+    }
     if (this.streak > 0) {
       this.addFloat(x, y - 60, 'MISS', PAL.grey, 36);
       this.addFloat(a.x, a.y - 470, `Streak lost (${this.streak})`, PAL.grey, 28);
@@ -917,7 +1037,7 @@ export class Game {
     a.pose = 'victory';
     this.victoryT = 0;
     this.slowT = 0;
-    this.showBanner('YOU DID IT!', 'great', '10 in a row');
+    this.showBanner('CHALLENGE COMPLETE!', 'great', '10 in a row · the desert awaits →');
     this.audio.duck(false);
     this.audio.setLayers(3);
     this.audio.fanfare();
@@ -960,11 +1080,17 @@ export class Game {
       this.updateCamera(dtr);
       return;
     }
+    if (this.cut) {
+      this.updateCutscene(dtr, dt);
+      return;
+    }
     this.updateArcher(dt);
     this.driveAnim(dt);
     this.updatePickups(dt);
     this.updateTarget(dt);
     this.updateWind(dt);
+    if (this.stage === 'desert') this.updateDesert(dt);
+    this.updateTransition(dtr);
     this.updateArrows(dt);
     this.updateFx(dt);
     this.updateCamera(dtr);
@@ -976,13 +1102,615 @@ export class Game {
     if (this.victoryT >= 0) {
       this.victoryT += dtr;
       if (Math.random() < dtr * 10) this.confetti(this.archer.x, this.archer.y - 500, 3);
-      if (this.victoryT > 3 && this.phase === 'playing') this.finishRun(true);
+      if (this.victoryT > 3 && this.phase === 'playing') {
+        if (this.stage === 'snow') this.openRoad();
+        else this.finishRun(true);
+      }
     }
     if (this.gameoverT >= 0 && !this.archer.victory) {
       this.gameoverT += dtr;
       if (this.gameoverT > 1.6 && this.phase === 'playing' && !this.arrows.some((ar) => ar.state === 'fly')) {
         this.audio.gameOver();
         this.finishRun(false);
+      }
+    }
+  }
+
+  // ================================================================== stages: snow → desert → gate
+  stage: 'snow' | 'desert' = 'snow';
+  foe: SpartanFoe | null = null;
+  private trans: { kind: 'restart' | 'fadeIn'; t: number } | null = null;
+  private finale: { phase: 'out'; t: number } | null = null;
+  private fade = 0;
+  /** 1 = the first stage's line, target stand and cliff wall are there; fades to 0 when the road opens */
+  private obst = 1;
+  private skipped = false;
+  /** global camera zoom preference (user slider) */
+  zoomPref = (() => {
+    try {
+      const v = parseFloat(localStorage.getItem('als-zoom') ?? '');
+      return Number.isFinite(v) ? Math.min(1.3, Math.max(0.5, v)) : 0.7;
+    } catch {
+      return 0.7;
+    }
+  })();
+  private shakeT = 0;
+  private shakeX = 0;
+  private shakeY = 0;
+  private foeBlocks = 0;
+  private slowFor: Arrow | null = null;
+  // ---- story: speech bubbles + the first-meeting cutscene
+  private bubbles: Array<{ who: 'hero' | 'foe'; text: string; t: number; dur: number }> = [];
+  private barkCool = { hero: 0, foe: 0 };
+  private metDone = false;
+  private cut: { t: number; shot: 'foe' | 'hero' | 'heroWide'; fired: number; kind: 'meet' | 'defeat' } | null = null;
+  get cutActive() {
+    return this.cut !== null;
+  }
+  private minX = CFG.archer.minX;
+  private maxX = CFG.archer.maxX;
+  private worldW = W;
+  private wallX = 140;
+  private desertScene: DesertScene | null = null;
+
+  /** DEV: set the Spartan's lives (1..20). Remembered; applies at once if he is on screen. */
+  setFoeLives(n: number) {
+    FOE.hp = Math.min(20, Math.max(1, Math.round(n)));
+    try {
+      localStorage.setItem('als-foe-lives', String(FOE.hp));
+    } catch {
+      /* ignore */
+    }
+    if (this.foe && this.foe.alive) this.foe.hp = FOE.hp;
+  }
+
+  setZoom(v: number) {
+    this.zoomPref = Math.min(1.3, Math.max(0.5, v));
+    try {
+      localStorage.setItem('als-zoom', String(this.zoomPref));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** 0 = snow backdrop only … 1 = desert backdrop only; driven by where the hero walks (no teleport) */
+  private blend() {
+    if (this.stage === 'snow') return 0;
+    if (this.skipped) return 1;
+    return smoothstep((300 - this.archer.x) / 1600);
+  }
+
+  private scene() {
+    return (this.desertScene ??= new DesertScene());
+  }
+
+  private sceneEnv(ctx: CanvasRenderingContext2D, w: number, h: number, visW: number, t: number): SceneEnv {
+    return {
+      setLayer: (f) => this.setCam(ctx, f),
+      camX: this.cam.x,
+      visW,
+      groundY: G,
+      w,
+      h,
+      progress: clamp(xToU(this.archer.x) / TOTAL_U, 0, 1),
+      time: t,
+    };
+  }
+
+  /** hero input is ignored while scripted things happen */
+  private inputLocked() {
+    const a = this.archer;
+    return a.downT > 0 || a.introWalkT > 0 || this.trans?.kind === 'restart' || this.finale !== null || this.cut !== null;
+  }
+
+  private minXNow() {
+    if (this.stage === 'snow') return this.minX;
+    if (this.foe?.alive) return this.foe.x + 260;
+    return uToX(END_U + 260);
+  }
+
+  /** The first challenge is won: the line, the target and the cliff wall dissolve and the hero simply keeps walking. */
+  private openRoad() {
+    const a = this.archer;
+    this.victoryT = -1;
+    a.victory = false;
+    a.pose = 'idle';
+    this.stage = 'desert';
+    this.maxX = CFG.archer.maxX;
+    this.wallX = uToX(END_U + 700);
+    this.scene();
+    this.streak = 0;
+    this.arrows = [];
+    this.wind = { cur: 0, goal: 0, max: 0, gust: false, gustT: 0 };
+    this.arrowsLeft = Infinity;
+    this.gameoverT = -1;
+    this.finale = null;
+    this.foeBlocks = 0;
+    this.foe = new SpartanFoe(uToX(FOE_U));
+    this.foe.onEvent = (e) => this.onFoeEvent(e);
+    this.target.x = this.foe.worldX;
+    a.introWalkT = 2.4;
+    this.hintLast = '';
+    this.hintT = 99;
+    this.showBanner('THE ROAD OPENS', 'great', 'Keep walking → the desert gate is ahead');
+    this.audio.pop();
+  }
+
+  private enterDesert(skip: boolean) {
+    const a = this.archer;
+    this.stage = 'desert';
+    this.skipped = true;
+    this.obst = 0;
+    this.minX = uToX(END_U + 260);
+    this.maxX = CFG.archer.maxX;
+    this.wallX = uToX(END_U + 700);
+    this.scene();
+    a.x = uToX(DESERT.HERO_U);
+    a.y = G;
+    a.facing = -1;
+    a.pose = 'idle';
+    a.victory = false;
+    a.charging = false;
+    a.power = 0;
+    a.downT = 0;
+    a.kb = 0;
+    a.hasBow = true;
+    a.hasQuiver = true;
+    this.weapon = 'bow';
+    this.weaponReady = false;
+    this.hold = null;
+    for (const p of this.pickups) {
+      p.collected = true;
+      p.fly = 1;
+    }
+    this.startArrowVisible = false;
+    this.streak = 0;
+    this.arrows = [];
+    this.particles = [];
+    this.floats = [];
+    this.wind = { cur: 0, goal: 0, max: 0, gust: false, gustT: 0 };
+    this.arrowsLeft = Infinity;
+    this.victoryT = -1;
+    this.gameoverT = -1;
+    this.finale = null;
+    this.foeBlocks = 0;
+    this.foe = new SpartanFoe(uToX(FOE_U));
+    this.foe.onEvent = (e) => this.onFoeEvent(e);
+    this.target.x = this.foe.worldX;
+    a.introWalkT = skip ? 0 : 1.5;
+    this.cam.x = a.x - 150;
+    this.cam.zoom = 0.78;
+    this.hintLast = '';
+    this.hintT = 99;
+    this.showBanner('THE DESERT GATE', 'great', 'A Spartan guards the arch · his shield blocks arrows');
+    this.audio.pop();
+  }
+
+  private restartDesert() {
+    const a = this.archer;
+    this.skipped = true;
+    this.obst = 0;
+    a.x = uToX(DESERT.HERO_U);
+    a.downT = 0;
+    a.kb = 0;
+    a.pose = 'idle';
+    a.charging = false;
+    a.power = 0;
+    a.introWalkT = 0.8;
+    this.arrows = [];
+    this.particles = [];
+    this.floats = [];
+    this.foe?.reset(uToX(FOE_U));
+    this.foeBlocks = 0;
+    this.cam.x = a.x - 150;
+    this.hintLast = '';
+    this.hintT = 99;
+    this.showBanner('TRY AGAIN', 'good', 'Back to the start of the desert');
+  }
+
+  /** The Spartan's sword touched the hero. */
+  private heroHit() {
+    const a = this.archer;
+    if (a.charging) this.cancelCharge();
+    this.audio.creakStop();
+    a.downT = 1.3;
+    a.pose = 'sad';
+    a.poseT = 0;
+    a.kb = 560;
+    this.trans = { kind: 'restart', t: 0 };
+    this.shakeT = 0.55;
+    this.slowT = 0.3;
+    this.slowScale = 0.3;
+    this.audio.shake();
+    this.audio.womp();
+    this.addFloat(a.x, a.y - 480, 'OUCH!', PAL.red, 54);
+    this.barkCool.hero = 0;
+    this.bark('hero', 'ouch', 1, 0.2);
+    this.bark('foe', 'taunt', 0.8, 0.9);
+    this.burst(a.x, a.y - 250, 18, [PAL.red, '#FFFFFF', PAL.gold], 440, 's', 400);
+    this.ring(a.x, a.y - 250, '#FFFFFF', 120);
+  }
+
+  /** The hero's own weapons against the Spartan: melee blows, punches, crossbow bolts. */
+  private heroBlowVsFoe(kind: string) {
+    const foe = this.foe;
+    const a = this.archer;
+    if (this.stage !== 'desert' || !foe || !foe.alive) return;
+    if (kind === 'crossbow') {
+      const tip = this.weaponTip();
+      const dx = a.facing === -1 ? -1 : 1;
+      this.arrows.push({ x: tip.x, y: tip.y, vx: dx * 1900, vy: -45, rot: dx === -1 ? Math.PI : 0, state: 'fly', stick: null, t: 0, trail: [], dist: 0, final: false, closeCalled: false });
+      this.arrowsUsed++;
+      return;
+    }
+    const tip = this.weaponTip();
+    const res = foe.testMelee(a.x, tip.x, G);
+    if (!res) return;
+    if (res === 'shield') {
+      const angry = foe.block(0, 0, 0, false);
+      this.foeBlocks++;
+      this.burst(tip.x, tip.y, 10, ['#FFFFFF', PAL.gold, '#D9A25B'], 330, 's', 300);
+      this.audio.wallThud();
+      this.addFloat(tip.x, tip.y - 110, 'CLANG!', PAL.grey, 34);
+      if (angry) {
+        this.addFloat(foe.worldX, G - 560, 'GRRR!', PAL.red, 40);
+        this.shakeT = 0.25;
+      } else this.addFloat(foe.worldX, G - 520, `${foe.anger}/${foe.angerMax}`, PAL.orange, 28);
+      return;
+    }
+    const dmg: Record<string, number> = { unarmed: 0.5, sword: 1, spear: 1, staff: 1, axe: 1.5 };
+    const dead = foe.damage(dmg[kind] ?? 1);
+    this.burst(tip.x, tip.y, 18, [PAL.red, PAL.orange2, '#FFFFFF', PAL.gold], 420, 's', 450);
+    this.ring(tip.x, tip.y, PAL.gold, 110);
+    this.addFloat(tip.x, tip.y - 110, dead ? 'DOWN!' : `HIT! ${Math.ceil(foe.hp)} left`, PAL.gold, 40);
+    this.audio.thud();
+    this.shakeT = 0.3;
+    this.slowT = 0.3;
+    this.slowScale = 0.3;
+    if (dead) this.onFoeDefeated();
+  }
+
+  // ---------------------------------------------------------------- dialogue + cutscene
+  private speak(who: 'hero' | 'foe', text: string, dur = 2.4, delay = 0) {
+    this.bubbles = this.bubbles.filter((b) => b.who !== who);
+    this.bubbles.push({ who, text, t: -delay, dur });
+  }
+
+  private bark(who: 'hero' | 'foe', kind: string, prob = 1, delay = 0) {
+    if (this.cut || this.phase !== 'playing' || this.stage !== 'desert' || this.barkCool[who] > 0 || Math.random() > prob) return;
+    const bank = (LINES[who] as Record<string, readonly string[]>)[kind];
+    if (!bank) return;
+    this.speak(who, pick(bank), 2.4, delay);
+    this.barkCool[who] = 2.8 + delay;
+  }
+
+  private onFoeEvent(e: string) {
+    if (this.stage !== 'desert') return;
+    switch (e) {
+      case 'notice':
+        if (!this.metDone) this.startCutscene();
+        else this.bark('foe', 'notice');
+        break;
+      case 'attack':
+        this.bark('foe', 'attack', 0.8);
+        break;
+      case 'sprint':
+        this.bark('foe', 'sprint', 0.4);
+        break;
+      case 'block':
+        this.bark('foe', 'block', 0.5);
+        this.bark('hero', 'block', 0.25, 0.9);
+        break;
+      case 'hurt':
+        this.bark('foe', 'hurt', 1);
+        this.bark('hero', 'hit', 0.55, 1.1);
+        break;
+      case 'wound':
+        this.barkCool.foe = 0;
+        this.bark('foe', 'wound', 1);
+        break;
+      case 'die':
+        this.startDefeatCutscene();
+        break;
+    }
+  }
+
+  private startCutscene() {
+    const a = this.archer;
+    if (!this.foe) return;
+    if (a.charging) this.cancelCharge();
+    this.audio.creakStop();
+    this.bubbles = [];
+    this.cut = { t: 0, shot: 'foe', fired: 0, kind: 'meet' };
+    this.foe.hold = 'notice';
+    this.foe.hunting = true;
+    this.hold = null;
+    this.peekDir = null;
+  }
+
+  /** The Spartan fell: his last words, then the hero's victory. */
+  private startDefeatCutscene() {
+    const a = this.archer;
+    if (!this.foe || this.cut) return;
+    if (a.charging) this.cancelCharge();
+    this.audio.creakStop();
+    this.bubbles = [];
+    this.arrows = this.arrows.filter((ar) => ar.state !== 'fly');
+    this.cut = { t: 0, shot: 'foe', fired: 0, kind: 'defeat' };
+    this.hold = null;
+    this.peekDir = null;
+    this.slowT = 0;
+  }
+
+  skipCutscene() {
+    if (this.cut) this.endCutscene();
+  }
+
+  private endCutscene() {
+    const kind = this.cut?.kind;
+    this.cut = null;
+    this.metDone = true;
+    this.bubbles = [];
+    if (kind === 'defeat') {
+      this.archer.pose = 'idle';
+      this.showBanner('SPARTAN DOWN!', 'great', 'Follow the path past the ruins →');
+    }
+    if (this.foe) {
+      this.foe.hold = null;
+      this.foe.exprForce = null;
+      this.foe.hunting = true;
+    }
+    this.anim.faceOverride = null;
+    this.barkCool = { hero: 1.5, foe: 2.5 };
+  }
+
+  private updateCutscene(dtr: number, dt: number) {
+    const c = this.cut!;
+    const foe = this.foe!;
+    const an = this.anim;
+    const a = this.archer;
+    c.t += dtr;
+    const t = c.t;
+    let script: Array<[number, () => void]>;
+    if (c.kind === 'meet') {
+      script = [
+        [0.9, () => this.speak('foe', CUT_FOE, 3.4)],
+        [4.6, () => {
+          c.shot = 'hero';
+          an.react('surprised');
+        }],
+        [5.2, () => this.speak('hero', CUT_HERO, 3.4)],
+        [5.6, () => an.react('nod')],
+        [9.0, () => (c.shot = 'foe')],
+        [10.2, () => this.endCutscene()],
+      ];
+    } else {
+      // DEFEAT: the Spartan's last words (camera on his face while he falls), then the hero's victory
+      const last = pick(LINES.foe.die);
+      const win1 = pick(['Told you. Mostly beard.', 'Nothing personal.']);
+      script = [
+        [0.3, () => this.speak('foe', last, 3.4)],
+        [3.9, () => {
+          c.shot = 'hero';
+          a.pose = 'idle';
+          an.react('victory');
+          this.audio.fanfare();
+          this.confetti(a.x, G - 380, 70);
+        }],
+        [4.4, () => this.speak('hero', win1, 3)],
+        [5.4, () => (c.shot = 'heroWide')],
+        [5.6, () => an.react('victory')],
+        [7.3, () => this.speak('hero', "Now... where's my snack?", 2.8)],
+        [7.6, () => an.react('celebrate')],
+        [10.4, () => this.endCutscene()],
+      ];
+    }
+    while (this.cut && c.fired < script.length && t >= script[c.fired][0]) script[c.fired++][1]();
+    if (!this.cut) return;
+    if (c.kind === 'meet') {
+      // the Spartan sneers, laughs at the "snack" line, then glares; the hero goes from shock to a determined smirk
+      if (t < 0.9) foe.exprForce = { lift: 0.2, tilt: 0.2, eye: 0.95, mouth: 0.1, smile: 0.5, asym: 1 };
+      else if (t < 4.4) foe.exprForce = { lift: 0.35, tilt: 0.15, eye: 0.8, mouth: 0.5 + 0.28 * Math.sin(t * 13), smile: 0.9, asym: 1 };
+      else if (t < 8.8) foe.exprForce = { lift: -0.2, tilt: 0.45, eye: 0.9, mouth: 0.05, smile: -0.5, asym: 0 };
+      else foe.exprForce = { lift: -0.6, tilt: 0.75, eye: 0.7, mouth: 0.25, smile: -0.8, asym: 0 };
+      if (t < 4.6) an.faceOverride = { brow: 0.1, smile: 0 };
+      else if (t < 6.2) an.faceOverride = { brow: 0.95, smile: 0 };
+      else an.faceOverride = { brow: -0.55, smile: 0.7 };
+    } else {
+      // the Spartan: a weak, rueful smile fading to closed eyes; the hero: wide-eyed joy, then a proud grin
+      if (t < 3.9) foe.exprForce = { lift: 0.45, tilt: -0.5, eye: Math.max(0.15, 0.6 - 0.12 * t), mouth: 0.25 + 0.12 * Math.sin(t * 5), smile: -0.2, asym: 0 };
+      if (t < 3.9) an.faceOverride = { brow: 0.1, smile: 0 };
+      else if (t < 5.6) an.faceOverride = { brow: 0.95, smile: 1, blink: -0.2 };
+      else if (t < 7.3) an.faceOverride = { brow: 0.4, smile: 1 };
+      else an.faceOverride = { brow: -0.2, smile: 1 };
+    }
+    this.driveAnim(dt);
+    foe.update(dt, a.x, true);
+    for (const b of this.bubbles) b.t += dtr;
+    this.bubbles = this.bubbles.filter((b) => b.t < b.dur);
+    this.updateFx(dt);
+    this.updateCamera(dtr);
+  }
+
+  private drawBubbles(ctx: CanvasRenderingContext2D) {
+    if (!this.bubbles.length) return;
+    const a = this.archer;
+    const close = this.cut !== null;
+    for (const b of this.bubbles) {
+      if (b.t < 0) continue;
+      const foe = this.foe;
+      const fall = foe ? foe.fall : 0; // the bubble follows his head as he topples backwards
+      const headY = b.who === 'hero' ? a.y - 330 : G + (foe ? foe.pose.y : 0) - 395 * Math.cos(fall);
+      const x = b.who === 'hero' ? a.x - 20 : foe ? foe.worldX + 10 - 380 * Math.sin(fall) : a.x;
+      const size = close ? 27 : 24;
+      const maxW = close ? 560 : 400;
+      const al = clamp(Math.min(b.t / 0.15, (b.dur - b.t) / 0.25), 0, 1);
+      ctx.save();
+      ctx.globalAlpha = al;
+      ctx.translate(x, headY - (close ? 92 : 150));
+      ctx.scale(-1, 1); // the world is drawn mirrored: keep text readable
+      ctx.font = `800 ${size}px Nunito, "Segoe UI", system-ui, sans-serif`;
+      // word wrap
+      const words = b.text.split(' ');
+      const lines: string[] = [];
+      let cur = '';
+      for (const w of words) {
+        const test = cur ? cur + ' ' + w : w;
+        if (ctx.measureText(test).width > maxW && cur) {
+          lines.push(cur);
+          cur = w;
+        } else cur = test;
+      }
+      if (cur) lines.push(cur);
+      const lw = Math.max(...lines.map((l) => ctx.measureText(l).width));
+      const bw = lw + 44;
+      const bh = lines.length * (size + 6) + 26;
+      ctx.fillStyle = '#FFFFFF';
+      roundRectPath(ctx, -bw / 2, -bh, bw, bh, 22);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.moveTo(-16, -2);
+      ctx.lineTo(16, -2);
+      ctx.lineTo(b.who === 'hero' ? 18 : -18, 30);
+      ctx.closePath();
+      ctx.fill();
+      ctx.fillStyle = b.who === 'foe' ? '#8E1B17' : PAL.brownDark;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      lines.forEach((l, i) => ctx.fillText(l, 0, -bh + 13 + (size + 6) * i + (size + 6) / 2));
+      ctx.restore();
+    }
+  }
+
+  private onArrowFoe(ar: Arrow, hit: { kind: 'shield' | 'body'; x: number; y: number }) {
+    const foe = this.foe!;
+    if (hit.kind === 'shield') {
+      const h = foe.skel.handF;
+      let ox = foe.worldX - hit.x - h.x;
+      let oy = hit.y - G - h.y;
+      const r = Math.hypot(ox, oy);
+      if (r > 80) {
+        ox *= 80 / r;
+        oy *= 80 / r;
+      }
+      const angry = foe.block(ox, oy, Math.PI - ar.rot);
+      this.foeBlocks++;
+      this.burst(hit.x, hit.y, 10, ['#FFFFFF', PAL.gold, '#D9A25B'], 330, 's', 300);
+      this.ring(hit.x, hit.y, '#FFFFFF', 70);
+      this.audio.wallThud();
+      this.audio.thud();
+      this.addFloat(hit.x, hit.y - 120, 'CLANG!', PAL.grey, 34);
+      if (angry) {
+        this.addFloat(foe.worldX, G - 560, 'GRRR!', PAL.red, 40);
+        this.audio.shake();
+        this.shakeT = 0.25;
+      } else this.addFloat(foe.worldX, G - 520, `${foe.anger}/${foe.angerMax}`, PAL.orange, 28);
+    } else {
+      const gap = !foe.open;
+      const dead = foe.damage();
+      if (gap) this.addFloat(hit.x, hit.y - 170, 'THROUGH THE GAP!', PAL.orange, 32);
+      this.burst(hit.x, hit.y, 18, [PAL.red, PAL.orange2, '#FFFFFF', PAL.gold], 420, 's', 450);
+      this.ring(hit.x, hit.y, PAL.gold, 110);
+      this.addFloat(hit.x, hit.y - 110, dead ? 'DOWN!' : `HIT! ${foe.hp} left`, PAL.gold, 40);
+      this.audio.thud();
+      this.audio.score(2);
+      this.shakeT = 0.3;
+      this.slowT = 0.35;
+      this.slowScale = 0.3;
+      if (dead) this.onFoeDefeated();
+    }
+  }
+
+  private onFoeDefeated() {
+    if (this.cut) return; // the defeat cutscene (started by the Spartan's 'die' event) handles the celebration
+    const a = this.archer;
+    this.showBanner('SPARTAN DOWN!', 'great', 'Follow the path past the ruins →');
+    this.audio.fanfare();
+    this.confetti(this.foe!.worldX, G - 400, 90);
+    a.pose = 'celebrate';
+    a.poseT = 0;
+  }
+
+  private updateDesert(dt: number) {
+    const foe = this.foe!;
+    const a = this.archer;
+    if (this.obst > 0 && !this.skipped) this.obst = Math.max(0, this.obst - dt / 1.4);
+    this.barkCool.hero = Math.max(0, this.barkCool.hero - dt);
+    this.barkCool.foe = Math.max(0, this.barkCool.foe - dt);
+    for (const b of this.bubbles) b.t += dt;
+    this.bubbles = this.bubbles.filter((b) => b.t < b.dur);
+    // the shield reads incoming arrows: predicted impact height + time, so it can slide over and cover the hit
+    foe.predY = null;
+    foe.predT = 9;
+    let nearest: Arrow | null = null;
+    if (foe.alive) {
+      const plane = foe.worldX + (-foe.skel.handF.x + 12);
+      for (const ar of this.arrows) {
+        if (ar.state !== 'fly' || ar.vx >= 0 || ar.x <= plane) continue;
+        const tt = (ar.x - plane) / -ar.vx;
+        if (tt > 0 && tt < foe.predT) {
+          foe.predT = tt;
+          foe.predY = ar.y + ar.vy * tt + 0.5 * CFG.shot.gravity * tt * tt - G;
+          nearest = ar;
+        }
+      }
+    }
+    foe.update(dt, a.x, a.downT <= 0 && this.trans?.kind !== 'restart');
+    // slow motion while the shield slides to cover an arrow, so the player can see it
+    if (nearest && foe.tracking && foe.predT < 0.5 && this.slowFor !== nearest) {
+      this.slowFor = nearest;
+      this.slowT = 0.55;
+      this.slowScale = 0.35;
+    }
+    this.target.x = foe.alive ? foe.worldX : uToX(END_U);
+    if (foe.swordHits(a.x) && a.downT <= 0 && this.trans?.kind !== 'restart') {
+      foe.struck = true;
+      this.heroHit();
+    }
+    // the level ends when the hero has walked the path to the far side of the ruins (no auto-play)
+    if (!foe.alive && !this.finale && xToU(a.x) >= END_U) {
+      this.finale = { phase: 'out', t: 0 };
+      this.showBanner('PATH CLEARED', 'great', 'You passed the ruins');
+      this.audio.fanfare();
+      this.confetti(a.x, G - 400, 60);
+    }
+    const fin = this.finale;
+    if (fin) {
+      fin.t += dt;
+      if (fin.t > 1.2) this.fade = clamp((fin.t - 1.2) / 0.7, 0, 1);
+      if (fin.t > 2.0) {
+        this.finale = null;
+        this.finishRun(true);
+      }
+    }
+  }
+
+  private updateTransition(dtr: number) {
+    // camera shake
+    if (this.shakeT > 0) {
+      this.shakeT -= dtr;
+      const k = Math.max(0, this.shakeT);
+      this.shakeX = Math.sin(this.time * 90) * 22 * k;
+      this.shakeY = Math.cos(this.time * 70) * 14 * k;
+    } else {
+      this.shakeX = 0;
+      this.shakeY = 0;
+    }
+    const T = this.trans;
+    if (!T) return;
+    T.t += dtr;
+    if (T.kind === 'restart') {
+      this.fade = clamp((T.t - 0.65) / 0.35, 0, 1);
+      if (T.t > 1.05) {
+        this.restartDesert();
+        this.trans = { kind: 'fadeIn', t: 0 };
+        this.fade = 1;
+      }
+    } else if (T.kind === 'fadeIn') {
+      this.fade = clamp(1 - T.t / 0.8, 0, 1);
+      if (T.t > 0.8) {
+        this.trans = null;
+        this.fade = 0;
       }
     }
   }
@@ -1055,7 +1783,7 @@ export class Game {
   /** True when a player-triggered animation may start right now. */
   private canAct() {
     const a = this.archer;
-    return this.phase === 'playing' && !a.victory && a.pickupT <= 0 && a.attackT <= 0 && !this.anim.seq && !this.anim.attacking;
+    return this.phase === 'playing' && !a.victory && a.pickupT <= 0 && a.attackT <= 0 && !this.anim.seq && !this.anim.attacking && !this.inputLocked();
   }
 
   private beginAction() {
@@ -1072,6 +1800,7 @@ export class Game {
     }
     const hk = HOTKEYS.find((h) => h.code === code);
     if (!hk) return false;
+    if (this.inputLocked()) return false;
     if (hk.action === 'help' || hk.action === 'shoot' || hk.action === 'pause' || hk.action === 'mute') return false;
     if (this.phase !== 'playing') return false;
     this.runAction(hk.action);
@@ -1121,7 +1850,7 @@ export class Game {
   // ---- inventory -------------------------------------------------------
   equip(kind: WeaponKind) {
     const a = this.archer;
-    if (this.phase !== 'playing' || a.victory || a.pickupT > 0 || this.anim.seq) return;
+    if (this.phase !== 'playing' || a.victory || a.pickupT > 0 || this.anim.seq || this.inputLocked()) return;
     if (kind === 'bow' && !a.hasBow) {
       this.say('Find the bow first');
       return;
@@ -1151,7 +1880,7 @@ export class Game {
 
   attack() {
     const a = this.archer;
-    if (this.phase !== 'playing' || a.victory || a.pickupT > 0 || a.attackT > 0 || a.charging) return;
+    if (this.phase !== 'playing' || a.victory || a.pickupT > 0 || a.attackT > 0 || a.charging || this.inputLocked()) return;
     if (this.weapon === 'bow') {
       this.say(a.hasQuiver ? 'Hold SPACE to shoot' : 'No arrows yet');
       return;
@@ -1197,7 +1926,7 @@ export class Game {
     const p = this.pickups.find((q) => q.kind === kind);
     if (!p) return;
     const reach = kind === 'bow' ? 128 : 112;
-    p.x = clamp(a.x + (a.facing === -1 ? -reach : reach), CFG.archer.minX + 40, CFG.archer.maxX);
+    p.x = clamp(a.x + (a.facing === -1 ? -reach : reach), this.minX + 40, this.maxX);
     p.collected = false;
     p.fly = 0;
   }
@@ -1393,11 +2122,11 @@ export class Game {
       else if (armed) an.setBase('idle-alert');
       else an.setBase(this.weapon !== 'unarmed' && this.weapon !== 'bow' && this.weaponReady ? 'idle-armed' : 'idle');
       const standingArmed =
-        armed && this.phase === 'playing' && !a.victory && a.pickupT <= 0 && !an.seq && !this.hold && (a.pose === 'aim' || a.pose === 'draw' || a.pose === 'release');
+        armed && this.phase === 'playing' && !a.victory && a.pickupT <= 0 && !an.seq && !this.hold && (a.pose === 'aim' || a.pose === 'draw' || a.pose === 'release' || (this.fireQueued && a.pose === 'idle'));
       if (standingArmed) {
         an.shootAim(a.angle * DEG);
         if (a.charging) an.shootDraw(0.4 + 0.6 * (a.power / 100), true);
-        an.showArrow = this.canShootMore() && a.pose !== 'release' && !this.arrowInFlight();
+        an.showArrow = this.canShootMore() && a.pose !== 'release'; // the next arrow is fetched while the last one flies
       } else {
         an.showArrow = false;
         const st = an.shoot.stage;
@@ -1413,6 +2142,13 @@ export class Game {
     }
     if (a.pose === 'victory' && !an.reaction) an.react('victory');
     an.update(dt);
+    if (this.fireQueued) {
+      if (!this.spaceDown || a.pose === 'walk') this.fireQueued = false;
+      else if (an.arrowReady) {
+        this.fireQueued = false;
+        this.pressFire();
+      }
+    }
   }
 
   private updateArcherIdle(dt: number) {
@@ -1439,6 +2175,17 @@ export class Game {
     if (a.pickupT > 0) {
       a.pickupT -= dt;
       move = 0;
+    }
+    // scripted walking: leaving the first stage, entering the desert, walking through the gate
+    if (a.downT > 0) a.downT -= dt;
+    if (a.introWalkT > 0) {
+      a.introWalkT -= dt;
+      move = -1;
+    }
+    if (a.downT > 0 || this.trans?.kind === 'restart') move = 0;
+    if (Math.abs(a.kb) > 1) {
+      a.x = clamp(a.x + a.kb * dt, this.minXNow(), this.maxX);
+      a.kb *= Math.exp(-6 * dt);
     }
     // walking out of a sit / hide / idle-style hold ends it (sitting needs the stand-up animation first)
     if (move !== 0) {
@@ -1470,7 +2217,7 @@ export class Game {
     if (a.pose === 'shake' && a.poseT > 0.6) a.pose = base;
 
     if (move !== 0) {
-      a.x = clamp(a.x + move * this.moveSpeed() * dt, CFG.archer.minX, CFG.archer.maxX);
+      a.x = clamp(a.x + move * this.moveSpeed() * dt, this.minXNow(), this.maxX);
       a.facing = move < 0 ? -1 : 1;
       a.walkPhase += dt * 9;
       if (a.pose !== 'walk') {
@@ -1578,7 +2325,7 @@ export class Game {
         }
 
         // target plane crossing (from the right)
-        if (px > T.x && ar.x <= T.x) {
+        if (this.stage === 'snow' && px > T.x && ar.x <= T.x) {
           const f = (px - T.x) / (px - ar.x);
           const yc = py + (ar.y - py) * f;
           const cy = this.faceCy();
@@ -1611,6 +2358,17 @@ export class Game {
             this.slowScale = 0.4;
           }
         }
+        // the Spartan wakes when an arrow flies / lands anywhere near him
+        if (this.stage === 'desert' && this.foe && this.foe.alive && !this.foe.hunting && Math.abs(ar.x - this.foe.worldX) < 1150) this.foe.provoke();
+        // the Spartan: the shield covers what it is over; an open or fooled guard takes damage
+        if (this.stage === 'desert' && this.foe) {
+          const hit = this.foe.testArrow(px, py, ar.x, ar.y, G);
+          if (hit) {
+            this.onArrowFoe(ar, hit);
+            this.arrows.splice(i, 1);
+            continue;
+          }
+        }
         // ground
         if (ar.y >= G) {
           const f = (G - py) / (ar.y - py || 1);
@@ -1626,10 +2384,10 @@ export class Game {
           continue;
         }
         // cliff wall
-        if (ar.x <= 140) {
+        if (ar.x <= this.wallX) {
           ar.state = 'stuck';
-          ar.x = 140;
-          ar.stick = { kind: 'wall', ox: 140, oy: ar.y, rot: ar.rot };
+          ar.x = this.wallX;
+          ar.stick = { kind: 'wall', ox: this.wallX, oy: ar.y, rot: ar.rot };
           ar.trail = [];
           ar.t = 0;
           this.audio.wallThud();
@@ -1637,7 +2395,7 @@ export class Game {
           this.onMiss(ar, ar.x, ar.y);
           continue;
         }
-        if (ar.x > W + 300 || ar.y > G + 400) {
+        if (ar.x > this.worldW + 300 || ar.y > G + 400) {
           this.arrows.splice(i, 1);
           this.onMiss(ar, this.archer.x, this.archer.y - 300);
         }
@@ -1678,9 +2436,29 @@ export class Game {
     const a = this.archer;
     let want = '';
     if (this.phase === 'playing' && !a.victory) {
-      const dirTo = (x: number) => (x < a.x ? '←' : '→');
-      if (a.hintUnarmedT > 0) want = this.hintMsg || 'Need bow + arrows!';
-      else if (!a.hasBow && !a.hasQuiver) want = 'Head left ← to find your gear';
+      const dirTo = (x: number) => (x < a.x ? '→' : '←'); // the world is mirrored on screen
+      if (this.stage === 'desert' && this.foe?.alive) {
+        const f = this.foe;
+        if (f.state === 'windup' || f.state === 'strike' || f.state === 'recover') want = 'He is OPEN — shoot now!';
+        else if (this.foeBlocks >= 1 && this.foeBlocks < 6) want = `Blocked ${f.anger}/${f.angerMax} — three hits to his shield and he attacks`;
+        else if (f.state === 'idle' && !f.hunting) want = 'He has not noticed you — a shot from afar will wake him';
+        else if (f.tracking) want = 'His shield follows your arrow — shoot when he attacks';
+        else if (!this.arrowsUsed && a.x - f.x < 2400) want = 'His shield covers your arrows — make him angry, then shoot';
+        if (want || this.stage === 'desert') {
+          if (want !== this.hintLast) {
+            this.hintLast = want;
+            if (want) {
+              this.hintText = want;
+              this.hintT = 0;
+            } else this.hintT = Math.max(this.hintT, 6.5);
+          }
+          this.hintT += dtr;
+          return;
+        }
+      }
+      if (this.stage === 'desert' && this.foe && !this.foe.alive) want = 'Follow the path past the ruins →';
+      else if (a.hintUnarmedT > 0) want = this.hintMsg || 'Need bow + arrows!';
+      else if (!a.hasBow && !a.hasQuiver) want = 'Head right → to find your gear';
       else if (!a.hasQuiver) want = `Find the arrows ${dirTo(CFG.quiver.x)}`;
       else if (!a.hasBow) want = `Find the bow ${dirTo(CFG.bow.x)}`;
       else if (!a.firedOnce && this.pickups.every((p) => p.fly >= 1))
@@ -1707,8 +2485,21 @@ export class Game {
     const flying = this.arrows.find((ar) => ar.state === 'fly');
     const walking = a.pose === 'walk';
     const groundFrac = 0.3;
+    if (this.cut && this.foe) {
+      // cutscene: close-ups of the two faces
+      const shot = this.cut.shot;
+      const onFoe = shot === 'foe';
+      const tzc = (shot === 'heroWide' ? 1.15 : 1.65) / this.zoomPref;
+      const f = this.foe.fall; // follow the head as he topples backwards
+      const ttx = onFoe ? this.foe.worldX + 10 - 380 * Math.sin(f) : shot === 'heroWide' ? a.x - 30 : a.x - 20;
+      const tty = onFoe ? G + this.foe.pose.y - 395 * Math.cos(f) : shot === 'heroWide' ? G - 250 : G - 330;
+      this.cam.x = lerpRate(this.cam.x, ttx, 7, dtr);
+      this.cam.y = lerpRate(this.cam.y, tty, 7, dtr);
+      this.cam.zoom = lerpRate(this.cam.zoom, tzc, 5, dtr);
+      return;
+    }
     if (this.phase === 'title') {
-      tx = CFG.archer.startX + 60;
+      tx = CFG.archer.startX - 230; // mirrored world: puts the hero on the left, clear of the title card
       ty = 400;
       tz = 1;
     } else if (this.cam.impactT > 0) {
@@ -1721,7 +2512,7 @@ export class Game {
       tx = flying.x;
       const visH = visH1 / tz;
       ty = Math.min(G - visH * groundFrac, flying.y + 100);
-    } else if (a.victory) {
+    } else if (a.victory || this.finale) {
       tz = 1;
       tx = a.x;
       ty = G - (visH1 / tz) * groundFrac;
@@ -1745,11 +2536,13 @@ export class Game {
   // ------------------------------------------------------------------ render
   private setCam(ctx: CanvasRenderingContext2D, f: number) {
     const { w, h, dpr, s } = this.vp;
-    ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * (w / 2 - this.cam.x * f * s), dpr * (h / 2 - this.cam.y * s));
+    // World space is unchanged (target at low x, hero starts at high x) but is drawn mirrored on
+    // screen, so the hero starts on the left and walks right. Text must be flipped back (see MIRRORED).
+    ctx.setTransform(-dpr * s, 0, 0, dpr * s, dpr * (w / 2 + (this.cam.x * f + this.shakeX) * s), dpr * (h / 2 - (this.cam.y + this.shakeY) * s));
   }
 
   render(ctx: CanvasRenderingContext2D, w: number, h: number, dpr: number) {
-    const base = Math.min(h / 800, w / 900);
+    const base = Math.min(h / 800, w / 900) * this.zoomPref;
     const s = base * this.cam.zoom;
     this.vp = { w, h, dpr, base, s };
     const cam = this.cam;
@@ -1761,172 +2554,196 @@ export class Game {
     const bottom = cam.y + visH / 2;
     const t = this.time;
     const A = art();
+    const blend = this.blend();
 
-    // sky
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const sy = (wy: number) => (wy - cam.y) * s + h / 2;
-    const grad = ctx.createLinearGradient(0, sy(-1800), 0, sy(575));
-    grad.addColorStop(0, '#BFD3F2');
-    grad.addColorStop(0.5, PAL.sky);
-    grad.addColorStop(1, '#FFFFFF');
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, w, h);
-
-    // clouds
-    this.setCam(ctx, 0.12);
-    for (const c of this.clouds) drawCloud(ctx, c.x, c.y, c.r, c.a);
-
-    // far cliffs
-    this.setCam(ctx, 0.2);
-    {
-      const P = 1300;
-      const l = cam.x * 0.2 - visW / 2;
-      const r = cam.x * 0.2 + visW / 2;
-      for (let i = Math.floor(l / P) - 1; i <= Math.floor(r / P) + 1; i++) {
-        const ox = i * P;
-        const h1 = hash(i * 7 + 1);
-        const h2 = hash(i * 7 + 2);
-        const h3 = hash(i * 7 + 3);
-        const h4 = hash(i * 7 + 4);
-        ctx.save();
-        ctx.translate(ox + h1 * 220, 575);
-        ctx.scale(0.9 + 0.5 * h2, 0.85 + 0.6 * h2);
-        ctx.translate(-7, -575);
-        ctx.fillStyle = cliffGradient(ctx, 224, PAL.cliffNear);
-        ctx.fill(A.cliffL);
-        ctx.restore();
-        ctx.save();
-        ctx.translate(ox + 600 + h3 * 200, 575);
-        ctx.scale(0.85 + 0.5 * h4, 0.8 + 0.6 * h4);
-        ctx.translate(-672, -575);
-        ctx.fillStyle = cliffGradient(ctx, 237, PAL.cliffFar);
-        ctx.fill(A.cliffR);
-        ctx.restore();
-      }
+    if (blend > 0) {
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      this.scene().drawBack(ctx, this.sceneEnv(ctx, w, h, visW, t));
+      this.setCam(ctx, 1);
     }
-
-    // near layer: pines + mounds
-    this.setCam(ctx, 0.45);
-    {
-      const P = 800;
-      const l = cam.x * 0.45 - visW / 2;
-      const r = cam.x * 0.45 + visW / 2;
-      const cols = ['#C3D6F2', '#CDDDF5', '#D7E3F7'];
-      for (let i = Math.floor(l / P) - 1; i <= Math.floor(r / P) + 1; i++) {
-        const ox = i * P;
-        drawMound(ctx, ox + 400 + hash(i) * 200, 614, 520 + hash(i + 9) * 300, 26 + hash(i + 3) * 18, '#F3F5FB');
-        const n = 2 + Math.floor(hash(i + 5) * 2);
-        for (let k = 0; k < n; k++) {
-          const hx = ox + 100 + k * (P / n) + hash(i * 11 + k) * 160;
-          const hh = 110 + hash(i * 13 + k) * 90;
-          drawPine(ctx, hx, 614, hh, cols[(i + k + 300) % 3], '#B7C3E3');
-        }
-      }
-    }
-
-    // world layer
-    this.setCam(ctx, 1);
-    ctx.fillStyle = PAL.ground;
-    ctx.fillRect(left - 10, G, visW + 20, 70);
-    ctx.fillStyle = PAL.groundSide;
-    ctx.fillRect(left - 10, G + 70, visW + 20, Math.max(0, bottom - (G + 70)) + 20);
-    ctx.fillStyle = '#F6F7FC';
-    ctx.fillRect(left - 10, G - 2, visW + 20, 9);
-
-    // left cliff wall
-    if (left < 260) {
-      const wallTop = Math.min(top, -3000) - 200;
-      const wg = ctx.createLinearGradient(-200, 0, 140, 0);
-      wg.addColorStop(0, '#CCDBF4');
-      wg.addColorStop(1, '#DDE7F8');
-      ctx.fillStyle = wg;
-      ctx.fillRect(-3000, wallTop, 3140, G + 4 - wallTop);
-      ctx.fillStyle = '#E8EFFA';
-      ctx.fillRect(104, wallTop, 36, G + 4 - wallTop);
-      // rock strata + snow ledges for texture
-      for (let k = 0; k < 14; k++) {
-        const ly = G - 120 - k * 240 - hash(k + 40) * 140;
-        if (ly < top - 100 || ly > bottom + 100) continue;
-        const lw = 70 + hash(k + 41) * 90;
-        ctx.fillStyle = '#C4D5F1';
-        roundRectPath(ctx, 140 - lw - 10, ly + 12, lw + 10, 14, 7);
-        ctx.fill();
-        ctx.fillStyle = '#F7F9FE';
-        roundRectPath(ctx, 140 - lw, ly, lw + 6, 18, 9);
-        ctx.fill();
-      }
-      // snow drift at the foot of the wall
-      drawMound(ctx, 140, G + 2, 260, 46, '#F6F7FC');
-      drawMound(ctx, 60, G + 2, 300, 70, '#F6F7FC');
-    }
-
-    // decor (1x)
-    for (const d of this.decor) {
-      if (d.x < left - 400 || d.x > right + 400) continue;
-      if (d.kind === 'mound') drawMound(ctx, d.x, G + 2, d.s, 14, d.c);
-    }
-    for (const d of this.decor) {
-      if (d.x < left - 400 || d.x > right + 400) continue;
-      if (d.kind === 'pine') drawPine(ctx, d.x, G + 2, d.s, d.c, '#B7C3E3');
-      else if (d.kind === 'rock') drawRock(ctx, d.x, G + 2, d.s, d.s * 0.45, d.c);
-    }
-    for (const sx of CFG.signposts) {
-      if (sx > left - 200 && sx < right + 200) drawSignpost(ctx, sx, G, `${sx - CFG.target.x} m`);
-    }
-    if (CFG.fence.x > left - 200 && CFG.fence.x < right + 200) drawFence(ctx, CFG.fence.x, G);
-    for (const fx of CFG.flags) {
-      if (fx > left - 200 && fx < right + 200) drawFlag(ctx, fx, G, this.wind.cur, this.wind.max, t);
-    }
-    if (CFG.archer.startX > left - 700 && CFG.archer.startX < right + 700) {
+    if (blend < 1) {
       ctx.save();
-      ctx.translate(CFG.archer.startX - 480, 0);
-      drawPedestal(ctx);
-      ctx.restore();
-    }
+      if (blend > 0) ctx.globalAlpha = 1 - blend;
+      // sky
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      const sy = (wy: number) => (wy - cam.y) * s + h / 2;
+      const grad = ctx.createLinearGradient(0, sy(-1800), 0, sy(575));
+      grad.addColorStop(0, '#BFD3F2');
+      grad.addColorStop(0.5, PAL.sky);
+      grad.addColorStop(1, '#FFFFFF');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
 
-    // target
-    {
-      const T = this.target;
-      const by = this.baseY();
-      const lift = CFG.target.standLift;
-      // permanent snow base under the target
-      ctx.fillStyle = '#E4E7F3';
-      ctx.beginPath();
-      ctx.ellipse(T.x, G + 30, 250, 34, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.fillStyle = PAL.groundSide;
-      roundRectPath(ctx, T.x - 200, G - lift + 16, 400, lift + 14, 28);
-      ctx.fill();
-      ctx.fillStyle = PAL.ground;
-      roundRectPath(ctx, T.x - 200, G - lift - 6, 400, 44, 22);
-      ctx.fill();
-      ctx.fillStyle = PAL.groundDark;
-      roundRectPath(ctx, T.x - 130, G - lift + 2, 260, 20, 10);
-      ctx.fill();
-      if (T.platformVis + T.moveOff > 4) {
-        const ph = G - lift - by;
-        ctx.fillStyle = PAL.groundSide;
-        roundRectPath(ctx, T.x - 150, by + 16, 300, ph + 10, 22);
-        ctx.fill();
-        ctx.fillStyle = PAL.ground;
-        roundRectPath(ctx, T.x - 150, by - 2, 300, 34, 17);
-        ctx.fill();
-      }
-      ctx.save();
-      ctx.translate(T.x, by);
-      ctx.rotate(T.wobble);
-      drawTarget(ctx, T.scale, T.golden ? TARGET_GOLD : TARGET_RED, T.flash);
-      for (const ar of this.arrows) {
-        if (ar.state === 'stuck' && ar.stick && (ar.stick.kind === 'target' || ar.stick.kind === 'stand')) {
+      // clouds
+      this.setCam(ctx, 0.12);
+      for (const c of this.clouds) drawCloud(ctx, c.x, c.y, c.r, c.a);
+
+      // far cliffs
+      this.setCam(ctx, 0.2);
+      {
+        const P = 1300;
+        const l = cam.x * 0.2 - visW / 2;
+        const r = cam.x * 0.2 + visW / 2;
+        for (let i = Math.floor(l / P) - 1; i <= Math.floor(r / P) + 1; i++) {
+          const ox = i * P;
+          const h1 = hash(i * 7 + 1);
+          const h2 = hash(i * 7 + 2);
+          const h3 = hash(i * 7 + 3);
+          const h4 = hash(i * 7 + 4);
           ctx.save();
-          ctx.globalAlpha = clamp(1 - (ar.t - 2) / 0.6, 0, 1);
-          ctx.translate(ar.stick.ox + 14, ar.stick.oy);
-          ctx.rotate(ar.stick.rot);
-          drawArrowArt(ctx);
+          ctx.translate(ox + h1 * 220, 575);
+          ctx.scale(0.9 + 0.5 * h2, 0.85 + 0.6 * h2);
+          ctx.translate(-7, -575);
+          ctx.fillStyle = cliffGradient(ctx, 224, PAL.cliffNear);
+          ctx.fill(A.cliffL);
+          ctx.restore();
+          ctx.save();
+          ctx.translate(ox + 600 + h3 * 200, 575);
+          ctx.scale(0.85 + 0.5 * h4, 0.8 + 0.6 * h4);
+          ctx.translate(-672, -575);
+          ctx.fillStyle = cliffGradient(ctx, 237, PAL.cliffFar);
+          ctx.fill(A.cliffR);
           ctx.restore();
         }
       }
+
+      // near layer: pines + mounds
+      this.setCam(ctx, 0.45);
+      {
+        const P = 800;
+        const l = cam.x * 0.45 - visW / 2;
+        const r = cam.x * 0.45 + visW / 2;
+        const cols = ['#C3D6F2', '#CDDDF5', '#D7E3F7'];
+        for (let i = Math.floor(l / P) - 1; i <= Math.floor(r / P) + 1; i++) {
+          const ox = i * P;
+          drawMound(ctx, ox + 400 + hash(i) * 200, 614, 520 + hash(i + 9) * 300, 26 + hash(i + 3) * 18, '#F3F5FB');
+          const n = 2 + Math.floor(hash(i + 5) * 2);
+          for (let k = 0; k < n; k++) {
+            const hx = ox + 100 + k * (P / n) + hash(i * 11 + k) * 160;
+            const hh = 110 + hash(i * 13 + k) * 90;
+            drawPine(ctx, hx, 614, hh, cols[(i + k + 300) % 3], '#B7C3E3');
+          }
+        }
+      }
+
+      // world layer
+      this.setCam(ctx, 1);
+      ctx.fillStyle = PAL.ground;
+      ctx.fillRect(left - 10, G, visW + 20, 70);
+      ctx.fillStyle = PAL.groundSide;
+      ctx.fillRect(left - 10, G + 70, visW + 20, Math.max(0, bottom - (G + 70)) + 20);
+      ctx.fillStyle = '#F6F7FC';
+      ctx.fillRect(left - 10, G - 2, visW + 20, 9);
+
+      // left cliff wall
+      if (left < 260 && this.obst > 0.01) {
+        ctx.save();
+        ctx.globalAlpha *= this.obst;
+        const wallTop = Math.min(top, -3000) - 200;
+        const wg = ctx.createLinearGradient(-200, 0, 140, 0);
+        wg.addColorStop(0, '#CCDBF4');
+        wg.addColorStop(1, '#DDE7F8');
+        ctx.fillStyle = wg;
+        ctx.fillRect(-3000, wallTop, 3140, G + 4 - wallTop);
+        ctx.fillStyle = '#E8EFFA';
+        ctx.fillRect(104, wallTop, 36, G + 4 - wallTop);
+        // rock strata + snow ledges for texture
+        for (let k = 0; k < 14; k++) {
+          const ly = G - 120 - k * 240 - hash(k + 40) * 140;
+          if (ly < top - 100 || ly > bottom + 100) continue;
+          const lw = 70 + hash(k + 41) * 90;
+          ctx.fillStyle = '#C4D5F1';
+          roundRectPath(ctx, 140 - lw - 10, ly + 12, lw + 10, 14, 7);
+          ctx.fill();
+          ctx.fillStyle = '#F7F9FE';
+          roundRectPath(ctx, 140 - lw, ly, lw + 6, 18, 9);
+          ctx.fill();
+        }
+        // snow drift at the foot of the wall
+        drawMound(ctx, 140, G + 2, 260, 46, '#F6F7FC');
+        drawMound(ctx, 60, G + 2, 300, 70, '#F6F7FC');
+        ctx.restore();
+      }
+
+      // decor (1x)
+      for (const d of this.decor) {
+        if (d.x < left - 400 || d.x > right + 400) continue;
+        if (d.kind === 'mound') drawMound(ctx, d.x, G + 2, d.s, 14, d.c);
+      }
+      for (const d of this.decor) {
+        if (d.x < left - 400 || d.x > right + 400) continue;
+        if (d.kind === 'pine') drawPine(ctx, d.x, G + 2, d.s, d.c, '#B7C3E3');
+        else if (d.kind === 'rock') drawRock(ctx, d.x, G + 2, d.s, d.s * 0.45, d.c);
+      }
+      for (const sx of CFG.signposts) {
+        if (sx > left - 200 && sx < right + 200) drawSignpost(ctx, sx, G, `${sx - CFG.target.x} m`);
+      }
+      if (this.obst > 0.01 && CFG.fence.x > left - 200 && CFG.fence.x < right + 200) {
+        ctx.save();
+        ctx.globalAlpha *= this.obst;
+        drawFence(ctx, CFG.fence.x, G);
+        ctx.restore();
+      }
+      for (const fx of CFG.flags) {
+        if (fx > left - 200 && fx < right + 200) drawFlag(ctx, fx, G, this.wind.cur, this.wind.max, t);
+      }
+      if (CFG.archer.startX > left - 700 && CFG.archer.startX < right + 700) {
+        ctx.save();
+        ctx.translate(CFG.archer.startX - 480, 0);
+        drawPedestal(ctx);
+        ctx.restore();
+      }
+
+      // target + its stand (they dissolve when the road opens)
+      if (this.obst > 0.01) {
+        ctx.save();
+        ctx.globalAlpha *= this.obst;
+        const T = this.target;
+        const by = this.baseY();
+        const lift = CFG.target.standLift;
+        // permanent snow base under the target
+        ctx.fillStyle = '#E4E7F3';
+        ctx.beginPath();
+        ctx.ellipse(T.x, G + 30, 250, 34, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = PAL.groundSide;
+        roundRectPath(ctx, T.x - 200, G - lift + 16, 400, lift + 14, 28);
+        ctx.fill();
+        ctx.fillStyle = PAL.ground;
+        roundRectPath(ctx, T.x - 200, G - lift - 6, 400, 44, 22);
+        ctx.fill();
+        ctx.fillStyle = PAL.groundDark;
+        roundRectPath(ctx, T.x - 130, G - lift + 2, 260, 20, 10);
+        ctx.fill();
+        if (T.platformVis + T.moveOff > 4) {
+          const ph = G - lift - by;
+          ctx.fillStyle = PAL.groundSide;
+          roundRectPath(ctx, T.x - 150, by + 16, 300, ph + 10, 22);
+          ctx.fill();
+          ctx.fillStyle = PAL.ground;
+          roundRectPath(ctx, T.x - 150, by - 2, 300, 34, 17);
+          ctx.fill();
+        }
+        ctx.save();
+        ctx.translate(T.x, by);
+        ctx.rotate(T.wobble);
+        drawTarget(ctx, T.scale, T.golden ? TARGET_GOLD : TARGET_RED, T.flash);
+        for (const ar of this.arrows) {
+          if (ar.state === 'stuck' && ar.stick && (ar.stick.kind === 'target' || ar.stick.kind === 'stand')) {
+            ctx.save();
+            ctx.globalAlpha *= clamp(1 - (ar.t - 2) / 0.6, 0, 1);
+            ctx.translate(ar.stick.ox + 14, ar.stick.oy);
+            ctx.rotate(ar.stick.rot);
+            drawArrowArt(ctx);
+            ctx.restore();
+          }
+        }
+        ctx.restore();
+        ctx.restore();
+      }
+
       ctx.restore();
+      this.setCam(ctx, 1);
     }
 
     // pickups
@@ -1996,11 +2813,24 @@ export class Game {
       ctx.fill();
     }
 
+    // near lane (Spartan fight): the ruins stand BEHIND the hero. Far lane (the path past the ruins): the ruins are drawn OVER him
+    const lane = this.stage === 'desert' ? smoothstep((xToU(this.archer.x) - (FOE_U - 150)) / 450) : 0;
+    const heroBehind = lane > 0.5;
+    if (this.stage === 'desert' && !heroBehind) {
+      this.scene().drawArch(ctx, this.sceneEnv(ctx, w, h, visW, t));
+      this.setCam(ctx, 1);
+    }
+
     // archer (layered paper-rig, authored facing left)
     {
       const a = this.archer;
       ctx.save();
       ctx.translate(a.x, a.y);
+      if (lane > 0) {
+        // the path runs BEHIND the ruins: a little farther away (higher and smaller)
+        ctx.translate(0, -40 * lane);
+        ctx.scale(1 - 0.12 * lane, 1 - 0.12 * lane);
+      }
       ctx.scale(a.facing === -1 ? 1 : -1, 1);
       drawRig(ctx, this.anim.pose, this.anim.skel, { arrowsInQuiver: this.mode === 'hard' ? clamp(this.arrowsLeft, 0, 3) : 3 });
       ctx.restore();
@@ -2013,6 +2843,14 @@ export class Game {
         ctx.scale(1 + (1 - hp.squash) * 0.5, hp.squash);
         drawHatLoose(ctx);
         ctx.restore();
+      }
+
+      // the Spartan, then the gate's FRONT layer over both
+      if (this.stage === 'desert') {
+        this.foe?.drawWorld(ctx, G);
+        if (heroBehind) this.scene().drawArch(ctx, this.sceneEnv(ctx, w, h, visW, t));
+        this.scene().drawFront(ctx, this.sceneEnv(ctx, w, h, visW, t));
+        this.setCam(ctx, 1);
       }
 
       // angle indicator + preview
@@ -2037,7 +2875,9 @@ export class Game {
         ctx.font = 'bold 26px Nunito, "Segoe UI", system-ui, sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(`${Math.round(a.angle)}°`, hx - 150 * Math.cos(th / 2), hy - 150 * Math.sin(th / 2));
+        ctx.translate(hx - 150 * Math.cos(th / 2), hy - 150 * Math.sin(th / 2));
+        ctx.scale(-1, 1);
+        ctx.fillText(`${Math.round(a.angle)}°`, 0, 0);
         ctx.restore();
         if (a.charging && this.mode === 'normal') {
           const tip = this.launchPoint();
@@ -2118,7 +2958,7 @@ export class Game {
       ctx.save();
       ctx.globalAlpha = Math.max(0, al);
       ctx.translate(f.x, f.y);
-      ctx.scale(sc, sc);
+      ctx.scale(-sc, sc);
       ctx.font = `800 ${f.size}px Nunito, "Segoe UI", system-ui, sans-serif`;
       ctx.lineWidth = 8;
       ctx.lineJoin = 'round';
@@ -2129,8 +2969,11 @@ export class Game {
       ctx.restore();
     }
 
+    // speech bubbles (barks + the cutscene)
+    if (this.stage === 'desert') this.drawBubbles(ctx);
+
     // hint bubble
-    if (this.hintText && this.hintT < 7) {
+    if (this.hintText && this.hintT < 7 && !this.cut) {
       const k = this.hintT;
       const al = k < 0.25 ? k / 0.25 : k > 6.3 ? Math.max(0, 1 - (k - 6.3) / 0.7) : 1;
       if (al > 0) {
@@ -2153,7 +2996,9 @@ export class Game {
         ctx.fillStyle = PAL.brownDark;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(this.hintText, bx, by + 1);
+        ctx.translate(bx, by + 1);
+        ctx.scale(-1, 1);
+        ctx.fillText(this.hintText, 0, 0);
         ctx.restore();
       }
     }
@@ -2161,13 +3006,19 @@ export class Game {
     // screen-space: snow + slow-mo tint
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.fillStyle = '#FFFFFF';
+    const snowMul = 1 - blend;
     for (const f of this.snow) {
-      ctx.globalAlpha = f.a * 0.85;
+      if (snowMul <= 0) break;
+      ctx.globalAlpha = f.a * 0.85 * snowMul;
       ctx.beginPath();
       ctx.arc(f.x * w, f.y * h, f.r, 0, Math.PI * 2);
       ctx.fill();
     }
     ctx.globalAlpha = 1;
+    if (this.fade > 0) {
+      ctx.fillStyle = `rgba(255,243,214,${Math.min(1, this.fade)})`;
+      ctx.fillRect(0, 0, w, h);
+    }
     if (this.timeScale < 0.9) {
       const vg = ctx.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.3, w / 2, h / 2, Math.max(w, h) * 0.75);
       vg.addColorStop(0, 'rgba(90,110,170,0)');
@@ -2204,7 +3055,7 @@ export class Game {
       bowX: bow.collected ? -1 : bow.x,
       quiverX: quiver.collected ? -1 : quiver.x,
       targetX: this.target.x,
-      worldW: W,
+      worldW: CFG.archer.maxX - uToX(TOTAL_U),
       banner: this.banner,
       elapsed: this.elapsed,
       muted: this.audio.muted,
@@ -2218,6 +3069,13 @@ export class Game {
       weapon: this.weapon === 'bow' && !a.hasBow ? 'unarmed' : this.weapon,
       weaponReady: this.weaponReady,
       stance: this.stanceLabel(),
+      stage: this.stage,
+      foe: this.foe ? { hp: Math.ceil(this.foe.hp), max: FOE.hp, open: this.foe.open && this.foe.state !== 'idle', anger: this.foe.anger, angerMax: this.foe.angerMax, alive: this.foe.alive, state: this.foe.state } : null,
+      canSkip: this.stage === 'snow',
+      cut: this.cut !== null,
+      foeLives: FOE.hp,
+      worldMin: uToX(TOTAL_U),
+      zoom: this.zoomPref,
     };
   }
 }

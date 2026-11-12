@@ -13,6 +13,7 @@ interface Props {
   onAction: (action: string) => void;
   onEquip: (kind: WeaponKind) => void;
   onSettings?: () => void;
+  onZoom: (v: number) => void;
 }
 
 const QuiverIcon = ({ className = '' }: { className?: string }) => (
@@ -32,7 +33,7 @@ const BowIcon = ({ className = '' }: { className?: string }) => (
   </svg>
 );
 
-export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings }: Props) {
+export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings, onZoom }: Props) {
   const [animOpen, setAnimOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   useEffect(() => {
@@ -45,7 +46,8 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings 
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-  const pct = (x: number) => `${(x / s.worldW) * 100}%`;
+  // the world is mirrored on screen: the start is on the left, the target on the right
+  const pct = (x: number) => `${100 - ((x - s.worldMin) / s.worldW) * 100}%`;
   const windStr = Math.abs(s.wind);
   const windArrows = Math.min(4, Math.max(1, Math.ceil(windStr / 30)));
   const bannerColor =
@@ -61,9 +63,51 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings 
 
   return (
     <div className="pointer-events-none absolute inset-0 select-none text-[#4C372A]">
-      {/* top-left: streak + score */}
+      {/* cutscene: letterbox bars */}
+      {s.cut && (
+        <>
+          <div className="absolute inset-x-0 top-0 h-[11%] bg-black/85" />
+          <div className="absolute inset-x-0 bottom-0 flex h-[11%] items-center justify-center bg-black/85 text-[12px] font-bold tracking-widest text-white/70">SPACE · SKIP</div>
+        </>
+      )}
+
+      {/* top-left: streak + score (snow) / Spartan fight (desert) */}
       <div className="absolute left-3 top-3 flex flex-col gap-2 sm:left-5 sm:top-5">
-        <div className="hud-card flex items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4">
+        {s.stage === 'desert' && (
+          <div className="hud-card flex flex-col gap-1.5 px-3 py-2 sm:px-4">
+            <div className="text-[11px] font-extrabold tracking-[0.2em] text-[#8A5A1E]">THE DESERT GATE</div>
+            {s.foe && s.foe.alive ? (
+              <>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm">🛡</span>
+                  <span className="text-[11px] font-extrabold tracking-[0.16em] text-[#72625D]">SPARTAN LIVES</span>
+                  <div className="flex gap-1">
+                    {Array.from({ length: s.foe.max }).map((_, i) => (
+                      <span key={i} className={`block text-base leading-none transition-all ${i < s.foe!.hp ? '' : 'opacity-25 grayscale'}`}>
+                        ❤️
+                      </span>
+                    ))}
+                  </div>
+                  <span className="text-sm font-black tabular-nums text-[#AC2A22]">
+                    {s.foe.hp}/{s.foe.max}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-[11px] font-extrabold">
+                  <span className={s.foe.open && s.foe.state !== 'idle' && s.foe.state !== 'notice' ? 'rounded bg-[#EA6227] px-1.5 py-0.5 text-white' : 'rounded bg-[#EBEDF8] px-1.5 py-0.5 text-[#72625D]'}>{s.foe.open && s.foe.state !== 'idle' && s.foe.state !== 'notice' ? 'OPEN — SHOOT!' : s.foe.state === 'idle' ? 'UNAWARE' : s.foe.state === 'notice' ? 'NOTICED YOU' : 'GUARDING'}</span>
+                  <span className="flex gap-0.5" title="Blocked arrows → he attacks">
+                    {Array.from({ length: s.foe.angerMax }).map((_, i) => (
+                      <span key={i} className={`block h-2.5 w-2.5 rounded-full ${i < s.foe!.anger ? 'bg-[#D92B27]' : 'bg-[#DCDFEF]'}`} />
+                    ))}
+                  </span>
+                  <span className="text-[#9A8A84]">anger</span>
+                </div>
+              </>
+            ) : (
+              <div className="text-[12px] font-bold text-[#4C372A]">The Spartan has fallen — follow the path past the ruins →</div>
+            )}
+          </div>
+        )}
+        <div className={`hud-card items-center gap-2 px-3 py-2 sm:gap-3 sm:px-4 ${s.stage === 'desert' ? 'hidden' : 'flex'}`}>
           <span className="text-[11px] font-extrabold tracking-[0.2em] text-[#72625D]">STREAK</span>
           <div className="flex items-center gap-1 sm:gap-1.5">
             {Array.from({ length: s.goal }).map((_, i) => {
@@ -98,9 +142,9 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings 
       {/* top-center: progress map */}
       <div className="hud-card absolute left-1/2 top-3 hidden w-[300px] -translate-x-1/2 px-5 pb-2 pt-3 md:block lg:w-[380px]">
         <div className="relative h-2 rounded-full bg-[#DCDFEF]">
-          <div className="absolute inset-y-0 left-0 rounded-full bg-[#CADBF5]" style={{ width: pct(s.archerX) }} />
+          <div className="absolute inset-y-0 right-0 rounded-full bg-[#CADBF5]" style={{ width: `${((s.archerX - s.worldMin) / s.worldW) * 100}%` }} />
           <span className="map-icon" style={{ left: pct(s.targetX) }}>
-            🎯
+            {s.stage === 'desert' ? '🛡' : '🎯'}
           </span>
           {s.bowX >= 0 && (
             <span className="map-icon" style={{ left: pct(s.bowX) }}>
@@ -117,8 +161,8 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings 
           </span>
         </div>
         <div className="mt-1 flex justify-between text-[10px] font-extrabold tracking-widest text-[#72625D]">
-          <span>TARGET</span>
           <span>START</span>
+          <span>TARGET</span>
         </div>
       </div>
 
@@ -141,6 +185,12 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings 
             ⚙
           </button>
         )}
+      </div>
+      {/* camera zoom bar (global, remembered) */}
+      <div className="hud-card pointer-events-auto absolute right-3 top-[60px] flex items-center gap-2 px-3 py-1.5 sm:right-5 sm:top-[72px]" title="Camera zoom (− / +)">
+        <span className="text-sm">🔍</span>
+        <input type="range" className="lab-range w-28" min={0.5} max={1.3} step={0.02} value={s.zoom} onChange={(e) => onZoom(parseFloat(e.target.value))} aria-label="Camera zoom" />
+        <span className="w-9 text-right text-[11px] font-extrabold tabular-nums text-[#72625D]">{Math.round(s.zoom * 100)}%</span>
       </div>
       {animOpen && <AnimPanel onAction={onAction} onClose={() => setAnimOpen(false)} />}
       {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
@@ -239,7 +289,7 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings 
               <span className="text-[#72625D]">calm</span>
             ) : (
               <>
-                <span className="text-[#D92B27]">{(s.wind > 0 ? '→' : '←').repeat(windArrows)}</span>
+                <span className="text-[#D92B27]">{(s.wind > 0 ? '←' : '→').repeat(windArrows)}</span>
                 <span className="tabular-nums">{Math.round(windStr / 30) || 1}</span>
               </>
             )}
@@ -267,7 +317,7 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings 
 
       {/* touch controls */}
       {s.touch && (
-        <div className="pointer-events-auto absolute bottom-24 left-4 flex gap-3 sm:bottom-28">
+        <div className="pointer-events-auto absolute bottom-24 right-4 flex gap-3 sm:bottom-28">
           {[
             [-1, '◀'],
             [1, '▶'],
@@ -291,7 +341,7 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings 
         </div>
       )}
       {s.touch && s.armed && !s.charging && (
-        <div className="absolute bottom-28 right-6 text-right text-xs font-bold text-[#72625D]/80 sm:bottom-32">
+        <div className="absolute bottom-28 left-6 text-left text-xs font-bold text-[#72625D]/80 sm:bottom-32">
           drag back here
           <br />
           to aim &amp; shoot
