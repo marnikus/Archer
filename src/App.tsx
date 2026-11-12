@@ -84,7 +84,7 @@ export default function App() {
     }
   }, [game, mode]);
 
-  if (view === 'settings') return <SettingsScreen onExit={() => setView('game')} zoom={game.zoomPref} onZoom={(v) => { game.setZoom(v); setTick((t) => t + 1); }} />;
+  if (view === 'settings') return <SettingsScreen onExit={() => setView('game')} zoom={game.zoomPref} onZoom={(v) => { game.setZoom(v); setTick((t) => t + 1); }} tune={game.tune} onTune={(p) => { game.setTune(p); setTick((t) => t + 1); }} />;
 
   if (view === 'lab')
     return (
@@ -110,7 +110,7 @@ export default function App() {
         </button>
       )}
 
-      {hud.phase !== 'title' && <HUD s={hud} onPause={() => game.togglePause()} onMute={toggleMute} onMove={(d) => game.setTouchMove(-d)} onAction={(a) => game.runAction(a)} onEquip={(k) => game.equip(k)} onSettings={openSettings} onZoom={(v) => game.setZoom(v)} />}
+      {hud.phase !== 'title' && <HUD s={hud} onPause={() => game.togglePause()} onMute={toggleMute} onMove={(d) => game.setTouchMove(-d)} onAction={(a) => game.runAction(a)} onEquip={(k) => game.equip(k)} onSettings={openSettings} onZoom={(v) => game.setZoom(v)} onTune={(p) => game.setTune(p)} />}
 
       {hud.phase === 'title' && <TitleScreen mode={mode} setMode={setMode} onPlay={play} onLab={openLab} onSettings={openSettings} onSkip={skip} onFinal={finalShot} lives={hud.foeLives} onLives={(n) => game.setFoeLives(n)} best={hud.best} touch={hud.touch} />}
 

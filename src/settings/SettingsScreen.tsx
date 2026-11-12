@@ -1,7 +1,9 @@
 import { useEffect } from 'react';
 import { LayerEditor } from './LayerEditor';
+import { ShotTuneControls } from '../components/HudPanels';
+import type { ShotTuning } from '../game/engine';
 
-export function SettingsScreen({ onExit, zoom, onZoom }: { onExit: () => void; zoom: number; onZoom: (v: number) => void }) {
+export function SettingsScreen({ onExit, zoom, onZoom, tune, onTune }: { onExit: () => void; zoom: number; onZoom: (v: number) => void; tune: ShotTuning; onTune: (p: Partial<ShotTuning>) => void }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.code === 'Escape') onExit();
@@ -28,6 +30,12 @@ export function SettingsScreen({ onExit, zoom, onZoom }: { onExit: () => void; z
         <span className="w-12 text-sm font-extrabold tabular-nums text-[#4C372A]">{Math.round(zoom * 100)}%</span>
         <span className="text-[11px] font-semibold text-[#9A8A84]">smaller = camera farther away · applies to the whole game · also − / + keys</span>
       </div>
+      <details className="mb-3 rounded-2xl bg-white/80 px-4 py-2.5 shadow-[0_6px_20px_rgba(76,55,42,0.10)]" open>
+        <summary className="cursor-pointer text-[11px] font-black uppercase tracking-[0.2em] text-[#D92B27]">Shooting · speed, reload, delay between shots</summary>
+        <div className="mt-2 max-w-md">
+          <ShotTuneControls tune={tune} onTune={onTune} />
+        </div>
+      </details>
       <div className="min-h-0 flex-1">
         <LayerEditor />
       </div>

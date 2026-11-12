@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import type { HudState } from '../game/engine';
+import type { HudState, ShotTuning } from '../game/engine';
 import type { WeaponKind } from '../rig/rig';
 import { WEAPON_SLOTS } from '../game/hotkeys';
-import { AnimPanel, HelpPanel } from './HudPanels';
+import { AnimPanel, HelpPanel, TunePanel } from './HudPanels';
 import { WeaponIcon } from './WeaponIcon';
 
 interface Props {
@@ -14,6 +14,7 @@ interface Props {
   onEquip: (kind: WeaponKind) => void;
   onSettings?: () => void;
   onZoom: (v: number) => void;
+  onTune: (p: Partial<ShotTuning>) => void;
 }
 
 const QuiverIcon = ({ className = '' }: { className?: string }) => (
@@ -33,8 +34,9 @@ const BowIcon = ({ className = '' }: { className?: string }) => (
   </svg>
 );
 
-export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings, onZoom }: Props) {
+export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings, onZoom, onTune }: Props) {
   const [animOpen, setAnimOpen] = useState(false);
+  const [tuneOpen, setTuneOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -174,7 +176,27 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings,
         <button className="hud-btn" onClick={onPause} aria-label="Pause" title="Pause (Esc)">
           ⏸
         </button>
-        <button className="hud-btn" onClick={() => setAnimOpen((o) => !o)} aria-label="Animations" title="Play animations">
+        <button
+          className="hud-btn"
+          onClick={(e) => {
+            e.currentTarget.blur();
+            setTuneOpen((o) => !o);
+            setAnimOpen(false);
+          }}
+          aria-label="Shooting settings"
+          title="Shooting speed, reload, delay between shots"
+        >
+          🎯
+        </button>
+        <button
+          className="hud-btn"
+          onClick={() => {
+            setAnimOpen((o) => !o);
+            setTuneOpen(false);
+          }}
+          aria-label="Animations"
+          title="Play animations"
+        >
           🎬
         </button>
         <button className="hud-btn" onClick={() => setHelpOpen(true)} aria-label="Controls" title="Controls (F1)">
@@ -192,6 +214,7 @@ export function HUD({ s, onPause, onMute, onMove, onAction, onEquip, onSettings,
         <input type="range" className="lab-range w-28" min={0.5} max={1.3} step={0.02} value={s.zoom} onChange={(e) => onZoom(parseFloat(e.target.value))} aria-label="Camera zoom" />
         <span className="w-9 text-right text-[11px] font-extrabold tabular-nums text-[#72625D]">{Math.round(s.zoom * 100)}%</span>
       </div>
+      {tuneOpen && <TunePanel tune={s.tune} onTune={onTune} reloading={s.reloading} onClose={() => setTuneOpen(false)} />}
       {animOpen && <AnimPanel onAction={onAction} onClose={() => setAnimOpen(false)} />}
       {helpOpen && <HelpPanel onClose={() => setHelpOpen(false)} />}
 

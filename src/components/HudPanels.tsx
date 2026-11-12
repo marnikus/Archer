@@ -1,4 +1,5 @@
 import { HOTKEYS, keyFor } from '../game/hotkeys';
+import { DEFAULT_TUNING, type ShotTuning } from '../game/engine';
 
 // [action, label]
 const ANIM_GROUPS: Array<[string, Array<[string, string]>]> = [
@@ -45,6 +46,81 @@ export function AnimPanel({ onAction, onClose }: { onAction: (action: string) =>
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+const TUNE_ROWS: Array<{ key: 'drawSpeed' | 'reloadSpeed' | 'reloadPause' | 'shotDelay'; label: string; min: number; max: number; step: number; fmt: (v: number) => string; hint: string }> = [
+  { key: 'drawSpeed', label: 'Shooting speed', min: 0.3, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) + '×', hint: 'how fast the power bar fills / the bow is drawn' },
+  { key: 'reloadSpeed', label: 'Reload speed', min: 0.3, max: 4, step: 0.05, fmt: (v) => v.toFixed(2) + '×', hint: 'how fast the hand fetches and nocks the next arrow' },
+  { key: 'reloadPause', label: 'Pause before reload', min: 0, max: 2, step: 0.05, fmt: (v) => v.toFixed(2) + ' s', hint: 'rest after a shot before reaching for the quiver' },
+  { key: 'shotDelay', label: 'Delay between shots', min: 0, max: 3, step: 0.05, fmt: (v) => v.toFixed(2) + ' s', hint: 'minimum time between two arrows leaving the bow' },
+];
+
+/** Shooting feel: sliders + switch. Used in the HUD popover and in Settings. */
+export function ShotTuneControls({ tune, onTune, reloading }: { tune: ShotTuning; onTune: (p: Partial<ShotTuning>) => void; reloading?: boolean }) {
+  return (
+    <div className="space-y-2">
+      {TUNE_ROWS.map((r) => (
+        <label key={r.key} className="block" title={r.hint}>
+          <div className="flex items-center justify-between text-[11px] font-extrabold text-[#4C372A]">
+            <span>{r.label}</span>
+            <span className="tabular-nums text-[#EA6227]">{r.fmt(tune[r.key])}</span>
+          </div>
+          <input
+            type="range"
+            className="lab-range w-full"
+            min={r.min}
+            max={r.max}
+            step={r.step}
+            value={tune[r.key]}
+            onChange={(e) => onTune({ [r.key]: parseFloat(e.target.value) })}
+            onPointerUp={(e) => e.currentTarget.blur()}
+            aria-label={r.label}
+          />
+          <div className="text-[9px] font-semibold leading-tight text-[#9A8A84]">{r.hint}</div>
+        </label>
+      ))}
+      <label className="flex cursor-pointer items-start gap-2 rounded-xl bg-[#EBEDF8] px-2 py-1.5">
+        <input
+          type="checkbox"
+          className="mt-0.5 h-4 w-4 accent-[#EA6227]"
+          checked={tune.fireInFlight}
+          onChange={(e) => {
+            onTune({ fireInFlight: e.target.checked });
+            e.currentTarget.blur();
+          }}
+        />
+        <span>
+          <span className="block text-[11px] font-extrabold text-[#4C372A]">Shoot while the last arrow is still flying</span>
+          <span className="block text-[9px] font-semibold leading-tight text-[#9A8A84]">off = wait until the arrow has landed</span>
+        </span>
+      </label>
+      <div className="flex items-center justify-between">
+        <span className="text-[10px] font-extrabold text-[#9A8A84]">{reloading === undefined ? '' : reloading ? '↻ reloading…' : '● arrow ready'}</span>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.currentTarget.blur();
+            onTune({ ...DEFAULT_TUNING });
+          }}
+          className="rounded-lg bg-white px-2 py-1 text-[10px] font-black text-[#4C372A] shadow hover:bg-[#EA6227] hover:text-white"
+        >
+          Reset
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function TunePanel({ tune, onTune, reloading, onClose }: { tune: ShotTuning; onTune: (p: Partial<ShotTuning>) => void; reloading: boolean; onClose: () => void }) {
+  return (
+    <div className="pointer-events-auto absolute right-3 top-[116px] z-20 max-h-[78vh] w-[270px] overflow-y-auto rounded-2xl bg-white/90 p-3 shadow-[0_12px_40px_rgba(76,55,42,0.2)] backdrop-blur-md sm:right-5">
+      <div className="mb-2 flex items-center justify-between">
+        <span className="text-[11px] font-black uppercase tracking-[0.2em] text-[#D92B27]">Shooting</span>
+        <button onClick={onClose} className="text-sm font-black text-[#9A8A84]" aria-label="Close">✕</button>
+      </div>
+      <ShotTuneControls tune={tune} onTune={onTune} reloading={reloading} />
     </div>
   );
 }

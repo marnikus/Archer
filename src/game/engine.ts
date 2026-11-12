@@ -88,6 +88,21 @@ export interface Best {
   time: number;
 }
 
+/** user-adjustable shooting feel (UI: HUD 🎯 button and Settings) */
+export interface ShotTuning {
+  /** power-bar speed multiplier = how fast the bow is drawn */
+  drawSpeed: number;
+  /** speed multiplier of the arrow-fetch animation */
+  reloadSpeed: number;
+  /** pause (s) after a shot before the hand goes for the next arrow */
+  reloadPause: number;
+  /** minimum time (s) between two shots */
+  shotDelay: number;
+  /** allow the next shot while the previous arrow is still flying */
+  fireInFlight: boolean;
+}
+export const DEFAULT_TUNING: ShotTuning = { drawSpeed: 1, reloadSpeed: 1, reloadPause: 0.15, shotDelay: 0, fireInFlight: true };
+
 export interface HudState {
   phase: Phase;
   mode: Mode;
@@ -132,6 +147,8 @@ export interface HudState {
   foeLives: number;
   worldMin: number;
   zoom: number;
+  tune: ShotTuning;
+  reloading: boolean;
 }
 
 interface Arrow {
@@ -308,6 +325,8 @@ export class Game {
       if (this.phase === 'playing') this.audio.footstep(foot === 'front');
     };
     an.onEvent = (e) => this.onAnimEvent(e);
+    an.tune.loadSpeed = this.tune.reloadSpeed;
+    an.tune.loadPause = this.tune.reloadPause;
     return an;
   }
 
@@ -625,8 +644,8 @@ export class Game {
       this.peekDir = null;
       return;
     }
-    if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight() || a.attackT > 0 || this.anim.seq) return;
-    if (!this.anim.arrowReady) {
+    if (a.pose === 'walk' || !this.canShootMore() || (this.arrowInFlight() && !this.tune.fireInFlight) || a.attackT > 0 || this.anim.seq) return;
+    if (!this.shotReady()) {
       this.fireQueued = true; // raise the bow and fetch an arrow from the quiver; the draw starts as soon as it is nocked
       return;
     }
@@ -678,7 +697,7 @@ export class Game {
       this.spaceDown = false;
       return;
     }
-    if (a.pose === 'walk' || !this.canShootMore() || this.arrowInFlight() || !this.anim.arrowReady) return;
+    if (a.pose === 'walk' || !this.canShootMore() || (this.arrowInFlight() && !this.tune.fireInFlight) || !this.shotReady()) return;
     this.touchAim = { active: true, sx: px, sy: py };
     this.beginCharge();
   }
@@ -821,6 +840,7 @@ export class Game {
     if (this.mode === 'hard') this.arrowsLeft--;
     a.charging = false;
     a.power = 0;
+    this.sinceShot = 0;
     a.pose = 'release';
     a.poseT = 0;
     a.firedOnce = true;
@@ -1125,6 +1145,18 @@ export class Game {
   /** 1 = the first stage's line, target stand and cliff wall are there; fades to 0 when the road opens */
   private obst = 1;
   private skipped = false;
+  /** shooting feel, adjustable in the UI and remembered */
+  tune: ShotTuning = (() => {
+    try {
+      const raw = JSON.parse(localStorage.getItem('als-tune') ?? 'null');
+      if (raw && typeof raw === 'object') return { ...DEFAULT_TUNING, ...raw } as ShotTuning;
+    } catch {
+      /* ignore */
+    }
+    return { ...DEFAULT_TUNING };
+  })();
+  /** seconds since the last arrow left the bow */
+  private sinceShot = 99;
   /** global camera zoom preference (user slider) */
   zoomPref = (() => {
     try {
@@ -1162,6 +1194,28 @@ export class Game {
       /* ignore */
     }
     if (this.foe && this.foe.alive) this.foe.hp = FOE.hp;
+  }
+
+  setTune(p: Partial<ShotTuning>) {
+    const c = (v: number, a: number, b: number) => Math.min(b, Math.max(a, v));
+    const t = { ...this.tune, ...p };
+    t.drawSpeed = c(t.drawSpeed, 0.3, 3);
+    t.reloadSpeed = c(t.reloadSpeed, 0.3, 4);
+    t.reloadPause = c(t.reloadPause, 0, 2);
+    t.shotDelay = c(t.shotDelay, 0, 3);
+    this.tune = t;
+    this.anim.tune.loadSpeed = t.reloadSpeed;
+    this.anim.tune.loadPause = t.reloadPause;
+    try {
+      localStorage.setItem('als-tune', JSON.stringify(t));
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** the arrow is on the string and the minimum shot delay has passed */
+  private shotReady() {
+    return this.anim.arrowReady && this.sinceShot >= this.tune.shotDelay;
   }
 
   setZoom(v: number) {
@@ -2144,7 +2198,7 @@ export class Game {
     an.update(dt);
     if (this.fireQueued) {
       if (!this.spaceDown || a.pose === 'walk') this.fireQueued = false;
-      else if (an.arrowReady) {
+      else if (this.shotReady()) {
         this.fireQueued = false;
         this.pressFire();
       }
@@ -2165,6 +2219,7 @@ export class Game {
 
   private updateArcher(dt: number) {
     const a = this.archer;
+    this.sinceShot += dt;
     this.updateArcherIdle(dt);
     if (a.hintUnarmedT > 0) a.hintUnarmedT -= dt;
     const armed = this.armed();
@@ -2244,7 +2299,7 @@ export class Game {
 
     // meter
     if (a.charging && !this.touchAim.active) {
-      a.power += a.meterDir * 100 * (this.mode === 'hard' ? CFG.hard.meterSpeed : CFG.shot.meterSpeed) * dt;
+      a.power += a.meterDir * 100 * (this.mode === 'hard' ? CFG.hard.meterSpeed : CFG.shot.meterSpeed) * this.tune.drawSpeed * dt;
       if (a.power > 100) {
         a.power = 200 - a.power;
         a.meterDir = -1;
@@ -2854,7 +2909,7 @@ export class Game {
       }
 
       // angle indicator + preview
-      if (this.phase === 'playing' && this.armed() && (a.pose === 'aim' || a.pose === 'draw') && !a.victory && a.facing === -1 && !this.arrowInFlight() && a.pickupT <= 0) {
+      if (this.phase === 'playing' && this.armed() && (a.pose === 'aim' || a.pose === 'draw') && !a.victory && a.facing === -1 && (this.tune.fireInFlight || !this.arrowInFlight()) && a.pickupT <= 0) {
         const hf = this.anim.skel.handF;
         const hx = a.x + hf.x;
         const hy = a.y + hf.y + this.anim.pose.y;
@@ -3076,6 +3131,8 @@ export class Game {
       foeLives: FOE.hp,
       worldMin: uToX(TOTAL_U),
       zoom: this.zoomPref,
+      tune: { ...this.tune },
+      reloading: this.armed() && this.anim.shoot.stage !== 'none' && !this.anim.arrowReady,
     };
   }
 }
